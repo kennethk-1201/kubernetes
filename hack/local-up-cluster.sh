@@ -879,6 +879,8 @@ rotateCertificates: true
 runtimeRequestTimeout: "${RUNTIME_REQUEST_TIMEOUT}"
 staticPodPath: "${POD_MANIFEST_PATH}"
 resolvConf: "${KUBELET_RESOLV_CONF}"
+featureGates:
+  ContainerCheckpoint: true
 EOF
 
   if [[ "$ENABLE_TRACING" = true ]]; then
