@@ -1106,6 +1106,18 @@ func (m *kubeGenericRuntimeManager) computePodActions(ctx context.Context, pod *
 	return changes
 }
 
+func (m *kubeGenericRuntimeManager) isCheckpoint(pod *v1.Pod) bool {
+	annotations := pod.GetAnnotations()
+	if annotations == nil {
+		return false
+	}
+
+	_, podExists := annotations["checkpoint-pod"]
+	_, namespaceExists := annotations["checkpoint-namespace"]
+
+	return podExists && namespaceExists
+}
+
 // SyncPod syncs the running pod into the desired pod by executing following steps:
 //
 //  1. Compute sandbox and container changes.
@@ -1324,24 +1336,48 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 			return err
 		}
 
-		// NOTE (aramase) podIPs are populated for single stack and dual stack clusters. Send only podIPs.
-		if msg, err := m.startContainer(ctx, podSandboxID, podSandboxConfig, spec, pod, podStatus, pullSecrets, podIP, podIPs, imageVolumes); err != nil {
-			// startContainer() returns well-defined error codes that have reasonable cardinality for metrics and are
-			// useful to cluster administrators to distinguish "server errors" from "user errors".
-			metrics.StartedContainersErrorsTotal.WithLabelValues(metricLabel, err.Error()).Inc()
-			if sc.HasWindowsHostProcessRequest(pod, spec.container) {
-				metrics.StartedHostProcessContainersErrorsTotal.WithLabelValues(metricLabel, err.Error()).Inc()
+		// if annotations exist, do restore workflow
+		if m.isCheckpoint(pod) {
+			if msg, err := m.restoreContainer(ctx, podSandboxID, podSandboxConfig, spec, pod, podStatus, pullSecrets, podIP, podIPs, imageVolumes); err != nil {
+				// TODO: modify the error handling
+
+				// startContainer() returns well-defined error codes that have reasonable cardinality for metrics and are
+				// useful to cluster administrators to distinguish "server errors" from "user errors".
+				metrics.StartedContainersErrorsTotal.WithLabelValues(metricLabel, err.Error()).Inc()
+				if sc.HasWindowsHostProcessRequest(pod, spec.container) {
+					metrics.StartedHostProcessContainersErrorsTotal.WithLabelValues(metricLabel, err.Error()).Inc()
+				}
+				startContainerResult.Fail(err, msg)
+				// known errors that are logged in other places are logged at higher levels here to avoid
+				// repetitive log spam
+				switch {
+				case err == images.ErrImagePullBackOff:
+					klog.V(3).InfoS("Container start failed in pod", "containerType", typeName, "container", spec.container, "pod", klog.KObj(pod), "containerMessage", msg, "err", err)
+				default:
+					utilruntime.HandleError(fmt.Errorf("%v %+v restore failed in pod %v: %v: %s", typeName, spec.container, format.Pod(pod), err, msg))
+				}
+				return err
 			}
-			startContainerResult.Fail(err, msg)
-			// known errors that are logged in other places are logged at higher levels here to avoid
-			// repetitive log spam
-			switch {
-			case err == images.ErrImagePullBackOff:
-				klog.V(3).InfoS("Container start failed in pod", "containerType", typeName, "container", spec.container, "pod", klog.KObj(pod), "containerMessage", msg, "err", err)
-			default:
-				utilruntime.HandleError(fmt.Errorf("%v %+v start failed in pod %v: %v: %s", typeName, spec.container, format.Pod(pod), err, msg))
+		} else {
+			// NOTE (aramase) podIPs are populated for single stack and dual stack clusters. Send only podIPs.
+			if msg, err := m.startContainer(ctx, podSandboxID, podSandboxConfig, spec, pod, podStatus, pullSecrets, podIP, podIPs, imageVolumes); err != nil {
+				// startContainer() returns well-defined error codes that have reasonable cardinality for metrics and are
+				// useful to cluster administrators to distinguish "server errors" from "user errors".
+				metrics.StartedContainersErrorsTotal.WithLabelValues(metricLabel, err.Error()).Inc()
+				if sc.HasWindowsHostProcessRequest(pod, spec.container) {
+					metrics.StartedHostProcessContainersErrorsTotal.WithLabelValues(metricLabel, err.Error()).Inc()
+				}
+				startContainerResult.Fail(err, msg)
+				// known errors that are logged in other places are logged at higher levels here to avoid
+				// repetitive log spam
+				switch {
+				case err == images.ErrImagePullBackOff:
+					klog.V(3).InfoS("Container start failed in pod", "containerType", typeName, "container", spec.container, "pod", klog.KObj(pod), "containerMessage", msg, "err", err)
+				default:
+					utilruntime.HandleError(fmt.Errorf("%v %+v start failed in pod %v: %v: %s", typeName, spec.container, format.Pod(pod), err, msg))
+				}
+				return err
 			}
-			return err
 		}
 
 		return nil
