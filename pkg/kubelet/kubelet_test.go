@@ -3407,6 +3407,7 @@ func TestSyncPodSpans(t *testing.T) {
 		*kubeCfg.MemoryThrottlingFactor,
 		kubeletutil.NewPodStartupLatencyTracker(),
 		tp,
+		kubelet.kubeClient,
 	)
 	assert.NoError(t, err)
 

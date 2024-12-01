@@ -267,7 +267,7 @@ type HostInterface interface {
 	GetRunningPods(ctx context.Context) ([]*v1.Pod, error)
 	RunInContainer(ctx context.Context, name string, uid types.UID, container string, cmd []string) ([]byte, error)
 	CheckpointContainer(ctx context.Context, podUID types.UID, podFullName, containerName string, options *runtimeapi.CheckpointContainerRequest) error
-	GetCheckpoint(podFullName, containerName string) ([]byte, error)
+	GetLatestCheckpoint(podFullName, containerName string) ([]byte, error)
 	GetKubeletContainerLogs(ctx context.Context, podFullName, containerName string, logOptions *v1.PodLogOptions, stdout, stderr io.Writer) error
 	ServeLogs(w http.ResponseWriter, req *http.Request)
 	GetHostname() string
@@ -1085,7 +1085,7 @@ func (s *Server) checkpoint(request *restful.Request, response *restful.Response
 func (s *Server) getCheckpoint(request *restful.Request, response *restful.Response) {
 	podFullName := request.PathParameter("podID") + "_" + request.PathParameter("podNamespace")
 	containerName := request.PathParameter("containerName")
-	checkpoint, err := s.host.GetCheckpoint(podFullName, containerName)
+	checkpoint, err := s.host.GetLatestCheckpoint(podFullName, containerName)
 	if err != nil {
 		response.WriteError(http.StatusNotFound, err)
 	}

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	clientset "k8s.io/client-go/kubernetes"
 	"os"
 	"path/filepath"
 	"sort"
@@ -134,6 +135,9 @@ type kubeGenericRuntimeManager struct {
 	// wrapped image puller.
 	imagePuller images.ImageManager
 
+	// wrapped checkpoint puller
+	checkpointPuller images.CheckpointManager
+
 	// gRPC service clients
 	runtimeService internalapi.RuntimeService
 	imageService   internalapi.ImageManagerService
@@ -219,6 +223,7 @@ func NewKubeGenericRuntimeManager(
 	memoryThrottlingFactor float64,
 	podPullingTimeRecorder images.ImagePodPullingTimeRecorder,
 	tracerProvider trace.TracerProvider,
+	kubeClient clientset.Interface,
 ) (KubeGenericRuntime, error) {
 	ctx := context.Background()
 	runtimeService = newInstrumentedRuntimeService(runtimeService)
@@ -278,7 +283,10 @@ func NewKubeGenericRuntimeManager(
 		}
 	}
 	kubeRuntimeManager.keyring = credentialprovider.NewDockerKeyring()
-
+	kubeRuntimeManager.checkpointPuller = images.NewCheckpointManager(
+		kubecontainer.FilterEventRecorder(recorder),
+		kubeClient,
+	)
 	kubeRuntimeManager.imagePuller = images.NewImageManager(
 		kubecontainer.FilterEventRecorder(recorder),
 		kubeRuntimeManager,
@@ -1106,6 +1114,17 @@ func (m *kubeGenericRuntimeManager) computePodActions(ctx context.Context, pod *
 	return changes
 }
 
+func (m *kubeGenericRuntimeManager) isCheckpoint(pod *v1.Pod) bool {
+	annotations := pod.GetAnnotations()
+	if annotations == nil {
+		return false
+	}
+
+	_, podExists := annotations["kubernetes.io/source-pod"]
+
+	return podExists
+}
+
 // SyncPod syncs the running pod into the desired pod by executing following steps:
 //
 //  1. Compute sandbox and container changes.
@@ -1120,7 +1139,6 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 	// Step 1: Compute sandbox and container changes.
 	podContainerChanges := m.computePodActions(ctx, pod, podStatus)
 	klog.V(3).InfoS("computePodActions got for pod", "podActions", podContainerChanges, "pod", klog.KObj(pod))
-	klog.V(3).InfoS("kenneth kiang was here.")
 	if podContainerChanges.CreateSandbox {
 		ref, err := ref.GetReference(legacyscheme.Scheme, pod)
 		if err != nil {
@@ -1190,6 +1208,13 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 	if podContainerChanges.CreateSandbox {
 		var msg string
 		var err error
+
+		if utilfeature.DefaultFeatureGate.Enabled(features.ContainerCheckpoint) {
+			if err = m.checkpointPuller.CreatePodCheckpointStore(pod); err != nil {
+				klog.ErrorS(err, "Failed to create checkpoint directory", "pod", klog.KObj(pod))
+				return
+			}
+		}
 
 		klog.V(4).InfoS("Creating PodSandbox for pod", "pod", klog.KObj(pod))
 		metrics.StartedPodsTotal.Inc()
@@ -1325,7 +1350,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 		}
 
 		// NOTE (aramase) podIPs are populated for single stack and dual stack clusters. Send only podIPs.
-		if msg, err := m.startContainer(ctx, podSandboxID, podSandboxConfig, spec, pod, podStatus, pullSecrets, podIP, podIPs, imageVolumes); err != nil {
+		if msg, err := m.startContainer(ctx, typeName, podSandboxID, podSandboxConfig, spec, pod, podStatus, pullSecrets, podIP, podIPs, imageVolumes); err != nil {
 			// startContainer() returns well-defined error codes that have reasonable cardinality for metrics and are
 			// useful to cluster administrators to distinguish "server errors" from "user errors".
 			metrics.StartedContainersErrorsTotal.WithLabelValues(metricLabel, err.Error()).Inc()

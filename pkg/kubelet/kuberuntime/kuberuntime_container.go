@@ -193,25 +193,37 @@ func (m *kubeGenericRuntimeManager) getPodRuntimeHandler(pod *v1.Pod) (podRuntim
 // * create the container
 // * start the container
 // * run the post start lifecycle hooks (if applicable)
-func (m *kubeGenericRuntimeManager) startContainer(ctx context.Context, podSandboxID string, podSandboxConfig *runtimeapi.PodSandboxConfig, spec *startSpec, pod *v1.Pod, podStatus *kubecontainer.PodStatus, pullSecrets []v1.Secret, podIP string, podIPs []string, imageVolumes kubecontainer.ImageVolumes) (string, error) {
+func (m *kubeGenericRuntimeManager) startContainer(ctx context.Context, typeName string, podSandboxID string, podSandboxConfig *runtimeapi.PodSandboxConfig, spec *startSpec, pod *v1.Pod, podStatus *kubecontainer.PodStatus, pullSecrets []v1.Secret, podIP string, podIPs []string, imageVolumes kubecontainer.ImageVolumes) (string, error) {
 	container := spec.container
+	var imageRef string
+	var msg string
+	var err error
 
 	// Step 1: pull the image.
-	podRuntimeHandler, err := m.getPodRuntimeHandler(pod)
-	if err != nil {
-		return "", err
-	}
+	if utilfeature.DefaultFeatureGate.Enabled(features.ContainerCheckpoint) && m.isCheckpoint(pod) && typeName == "container" {
+		imageRef, msg, err = m.checkpointPuller.EnsureCheckpointExists(ctx, pod, container)
+		if err != nil {
+			s, _ := grpcstatus.FromError(err)
+			m.recordContainerEvent(pod, container, "", v1.EventTypeWarning, events.FailedToCreateContainer, "Error: %v", s.Message())
+			return msg, err
+		}
+	} else {
+		podRuntimeHandler, err := m.getPodRuntimeHandler(pod)
+		if err != nil {
+			return "", err
+		}
 
-	ref, err := kubecontainer.GenerateContainerRef(pod, container)
-	if err != nil {
-		klog.ErrorS(err, "Couldn't make a ref to pod", "pod", klog.KObj(pod), "containerName", container.Name)
-	}
+		ref, err := kubecontainer.GenerateContainerRef(pod, container)
+		if err != nil {
+			klog.ErrorS(err, "Couldn't make a ref to pod", "pod", klog.KObj(pod), "containerName", container.Name)
+		}
 
-	imageRef, msg, err := m.imagePuller.EnsureImageExists(ctx, ref, pod, container.Image, pullSecrets, podSandboxConfig, podRuntimeHandler, container.ImagePullPolicy)
-	if err != nil {
-		s, _ := grpcstatus.FromError(err)
-		m.recordContainerEvent(pod, container, "", v1.EventTypeWarning, events.FailedToCreateContainer, "Error: %v", s.Message())
-		return msg, err
+		imageRef, msg, err = m.imagePuller.EnsureImageExists(ctx, ref, pod, container.Image, pullSecrets, podSandboxConfig, podRuntimeHandler, container.ImagePullPolicy)
+		if err != nil {
+			s, _ := grpcstatus.FromError(err)
+			m.recordContainerEvent(pod, container, "", v1.EventTypeWarning, events.FailedToCreateContainer, "Error: %v", s.Message())
+			return msg, err
+		}
 	}
 
 	// Step 2: create the container.
