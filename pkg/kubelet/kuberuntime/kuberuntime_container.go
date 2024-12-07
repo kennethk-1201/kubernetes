@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -375,7 +376,11 @@ func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSan
 	}
 	defer checkpointResp.Body.Close()
 	if checkpointResp.StatusCode != http.StatusOK {
-		klog.Errorf("[restoreContainer] Checkpoint response not ok: %s", checkpointResp.Body)
+		body, readErr := ioutil.ReadAll(checkpointResp.Body)
+		if readErr != nil {
+			fmt.Printf("[restoreContainer] Error reading error response: %v\n", readErr)
+		}
+		klog.Errorf("[restoreContainer] Checkpoint response not ok: %s", body)
 		return "", errors.New("source node failed to checkpoint")
 	}
 
