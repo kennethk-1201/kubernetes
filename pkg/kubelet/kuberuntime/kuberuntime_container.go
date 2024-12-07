@@ -365,7 +365,7 @@ func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSan
 	}
 	transport := &http.Transport{TLSClientConfig: tlsConfig}
 	client := &http.Client{Transport: transport}
-	checkpointEndpoint := fmt.Sprintf("https://%s/checkpoint/%s/%s/%s", sourceNode, sourceNamespace, sourcePodName, sourceContainer)
+	checkpointEndpoint := fmt.Sprintf("https://%s:10250/checkpoint/%s/%s/%s", sourceNode, sourceNamespace, sourcePodName, sourceContainer)
 
 	req, err := http.NewRequest("POST", checkpointEndpoint, nil)
 	checkpointResp, err := client.Do(req)
