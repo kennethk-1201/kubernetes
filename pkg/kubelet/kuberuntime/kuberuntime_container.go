@@ -349,33 +349,23 @@ func sendKubeletRequest(method string, endpoint string, body io.Reader) (*http.R
 	return client.Do(req)
 }
 
-// restoreContainer starts a container and returns a message indicates why it is failed on error.
-// It starts the container through the following steps:
-// * creates the checkpoint
-// * retrieves the checkpoint
-// * restore the container
-// * run the post start lifecycle hooks (if applicable)
-func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSandboxID string, podSandboxConfig *runtimeapi.PodSandboxConfig, spec *startSpec, pod *v1.Pod, podStatus *kubecontainer.PodStatus, pullSecrets []v1.Secret, podIP string, podIPs []string, imageVolumes kubecontainer.ImageVolumes) (string, error) {
-	// Step 1: Checkpoint image
-	klog.InfoS("Entered restore workflow")
-
-	// Directly use annotations for now, rely on API server in the future.
+func ensureCheckpointExists(pod *v1.Pod) error {
 	sourcePodName, ok1 := pod.GetAnnotations()["kubernetes.io/source-pod"]
 	sourceNamespace, ok2 := pod.GetAnnotations()["kubernetes.io/source-namespace"]
 	sourceContainer, ok3 := pod.GetAnnotations()["kubernetes.io/source-container"]
 	sourceNode, ok4 := pod.GetAnnotations()["kubernetes.io/source-node"]
 	if !ok1 || !ok2 || !ok3 || !ok4 {
-		return "", errors.New("unable to find source Pod")
+		return errors.New("unable to find source Pod")
 	}
 
 	klog.InfoS("Retrieving endpoints", "pod", sourcePodName, "namespace", sourceNamespace, "container", sourceContainer, "node", sourceNode)
 
-	// TODO: add the -k flag, the key and cert flags to allow authentication temporarily
+	// Step 1: Create checkpoint
 	checkpointEndpoint := fmt.Sprintf("https://%s:10250/checkpoint/%s/%s/%s", sourceNode, sourceNamespace, sourcePodName, sourceContainer)
 	checkpointResp, err := sendKubeletRequest(http.MethodPost, checkpointEndpoint, nil)
 	if err != nil {
 		klog.ErrorS(err, "[restoreContainer] Failed to call the checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
-		return "", err
+		return err
 	}
 	defer checkpointResp.Body.Close()
 	if checkpointResp.StatusCode != http.StatusOK {
@@ -384,33 +374,50 @@ func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSan
 			fmt.Printf("[restoreContainer] Error reading error response: %v\n", readErr)
 		}
 		klog.Errorf("[restoreContainer] Checkpoint response not ok: %s", body)
-		return "", errors.New("source node failed to checkpoint: ")
+		return errors.New("source node failed to checkpoint: ")
 	}
 
 	// Step 2: Retrieve checkpoint
 	getCheckpointResp, err := sendKubeletRequest(http.MethodGet, checkpointEndpoint, nil)
 	if err != nil {
 		klog.ErrorS(err, "[restoreContainer] Failed to retrieve from checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
-		return "", err
+		return err
 	}
 	defer getCheckpointResp.Body.Close()
 	if getCheckpointResp.StatusCode != http.StatusOK {
 		klog.ErrorS(err, "[restoreContainer] Failed to call the retrieve checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
-		return "", errors.New("source node failed to retrieve checkpoint")
+		return errors.New("source node failed to retrieve checkpoint")
 	}
 
+	// Step 3: Save checkpoint
 	checkpointPath := "/home/vagrant/test-checkpoint.tar"
 	outFile, err := os.Create(checkpointPath)
 	if err != nil {
 		klog.ErrorS(err, "[restoreContainer] Failed to create tarfile", "path", checkpointPath)
-		return "", err
+		return err
 	}
 	defer outFile.Close()
 
-	// save checkpoint to some location
 	_, err = io.Copy(outFile, getCheckpointResp.Body)
 	if err != nil {
 		klog.ErrorS(err, "[restoreContainer] Failed to copy tarfile", "path", checkpointPath)
+		return err
+	}
+
+	return nil
+}
+
+// restoreContainer starts a container and returns a message indicates why it is failed on error.
+// It starts the container through the following steps:
+// * retrieves the checkpoint
+// * restore the container
+// * run the post start lifecycle hooks (if applicable)
+func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSandboxID string, podSandboxConfig *runtimeapi.PodSandboxConfig, spec *startSpec, pod *v1.Pod, podStatus *kubecontainer.PodStatus, pullSecrets []v1.Secret, podIP string, podIPs []string, imageVolumes kubecontainer.ImageVolumes) (string, error) {
+	// Step 1: retrieve the checkpoint
+	klog.InfoS("Entered restore workflow")
+
+	err := ensureCheckpointExists(pod)
+	if err != nil {
 		return "", err
 	}
 
@@ -475,6 +482,8 @@ func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSan
 		m.recordContainerEvent(pod, container, "", v1.EventTypeWarning, events.FailedToCreateContainer, "Error: %v", s.Message())
 		return s.Message(), ErrCreateContainerConfig
 	}
+
+	containerConfig.Image.Image = "/home/vagrant/test-checkpoint.tar" // tell CRI to create this container from a checkpoint
 
 	err = m.internalLifecycle.PreCreateContainer(pod, container, containerConfig)
 	if err != nil {
