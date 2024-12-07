@@ -331,6 +331,24 @@ func (m *kubeGenericRuntimeManager) startContainer(ctx context.Context, podSandb
 	return "", nil
 }
 
+func sendKubeletRequest(method string, endpoint string, body io.Reader) (*http.Response, error) {
+	certFile := "/var/run/kubernetes/client-admin.crt"
+	keyFile := "/var/run/kubernetes/client-admin.key"
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		klog.Errorf("Error loading certificate/key pair: %v\n", err)
+		return "", err
+	}
+	tlsConfig := &tls.Config{
+		Certificates:       []tls.Certificate{cert},
+		InsecureSkipVerify: true, // Equivalent to -k in curl; disables certificate validation
+	}
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	client := &http.Client{Transport: transport}
+	req, err := http.NewRequest(method, endpoint, body)
+	return client.Do(req)
+}
+
 // restoreContainer starts a container and returns a message indicates why it is failed on error.
 // It starts the container through the following steps:
 // * creates the checkpoint
@@ -353,23 +371,8 @@ func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSan
 	klog.InfoS("Retrieving endpoints", "pod", sourcePodName, "namespace", sourceNamespace, "container", sourceContainer, "node", sourceNode)
 
 	// TODO: add the -k flag, the key and cert flags to allow authentication temporarily
-	certFile := "/var/run/kubernetes/client-admin.crt"
-	keyFile := "/var/run/kubernetes/client-admin.key"
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		klog.Errorf("Error loading certificate/key pair: %v\n", err)
-		return "", err
-	}
-	tlsConfig := &tls.Config{
-		Certificates:       []tls.Certificate{cert},
-		InsecureSkipVerify: true, // Equivalent to -k in curl; disables certificate validation
-	}
-	transport := &http.Transport{TLSClientConfig: tlsConfig}
-	client := &http.Client{Transport: transport}
 	checkpointEndpoint := fmt.Sprintf("https://%s:10250/checkpoint/%s/%s/%s", sourceNode, sourceNamespace, sourcePodName, sourceContainer)
-
-	req, err := http.NewRequest("POST", checkpointEndpoint, nil)
-	checkpointResp, err := client.Do(req)
+	checkpointResp, err := sendKubeletRequest(http.MethodPost, checkpointEndpoint, nil)
 	if err != nil {
 		klog.ErrorS(err, "[restoreContainer] Failed to call the checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
 		return "", err
@@ -381,11 +384,15 @@ func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSan
 			fmt.Printf("[restoreContainer] Error reading error response: %v\n", readErr)
 		}
 		klog.Errorf("[restoreContainer] Checkpoint response not ok: %s", body)
-		return "", errors.New("source node failed to checkpoint")
+		return "", errors.New("source node failed to checkpoint: ")
 	}
 
 	// Step 2: Retrieve checkpoint
-	getCheckpointResp, err := http.Get(checkpointEndpoint)
+	getCheckpointResp, err := sendKubeletRequest(http.MethodGet, checkpointEndpoint, nil)
+	if err != nil {
+		klog.ErrorS(err, "[restoreContainer] Failed to retrieve from checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
+		return "", err
+	}
 	defer getCheckpointResp.Body.Close()
 	if getCheckpointResp.StatusCode != http.StatusOK {
 		klog.ErrorS(err, "[restoreContainer] Failed to call the retrieve checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
