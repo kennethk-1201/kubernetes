@@ -337,7 +337,7 @@ func sendKubeletRequest(method string, endpoint string, body io.Reader) (*http.R
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		klog.Errorf("Error loading certificate/key pair: %v\n", err)
-		return "", err
+		return nil, err
 	}
 	tlsConfig := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
