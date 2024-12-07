@@ -370,11 +370,12 @@ func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSan
 	req, err := http.NewRequest("POST", checkpointEndpoint, nil)
 	checkpointResp, err := client.Do(req)
 	if err != nil {
-		klog.ErrorS(err, "Failed to call the checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
+		klog.ErrorS(err, "[restoreContainer] Failed to call the checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
 		return "", err
 	}
 	defer checkpointResp.Body.Close()
 	if checkpointResp.StatusCode != http.StatusOK {
+		klog.Errorf("[restoreContainer] Checkpoint response not ok: %s", checkpointResp.Body)
 		return "", errors.New("source node failed to checkpoint")
 	}
 
@@ -382,14 +383,14 @@ func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSan
 	getCheckpointResp, err := http.Get(checkpointEndpoint)
 	defer getCheckpointResp.Body.Close()
 	if getCheckpointResp.StatusCode != http.StatusOK {
-		klog.ErrorS(err, "Failed to call the retrieve checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
+		klog.ErrorS(err, "[restoreContainer] Failed to call the retrieve checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
 		return "", errors.New("source node failed to retrieve checkpoint")
 	}
 
-	checkpointPath := "testcheckpoint.tar"
+	checkpointPath := "/home/vagrant/test-checkpoint.tar"
 	outFile, err := os.Create(checkpointPath)
 	if err != nil {
-		klog.ErrorS(err, "Failed to create tarfile", "path", checkpointPath)
+		klog.ErrorS(err, "[restoreContainer] Failed to create tarfile", "path", checkpointPath)
 		return "", err
 	}
 	defer outFile.Close()
@@ -397,7 +398,7 @@ func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSan
 	// save checkpoint to some location
 	_, err = io.Copy(outFile, getCheckpointResp.Body)
 	if err != nil {
-		klog.ErrorS(err, "Failed to copy tarfile", "path", checkpointPath)
+		klog.ErrorS(err, "[restoreContainer] Failed to copy tarfile", "path", checkpointPath)
 		return "", err
 	}
 
