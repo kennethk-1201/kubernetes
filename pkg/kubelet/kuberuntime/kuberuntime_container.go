@@ -18,6 +18,7 @@ package kuberuntime
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -343,16 +344,31 @@ func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSan
 	sourcePodName, ok1 := pod.GetAnnotations()["kubernetes.io/source-pod"]
 	sourceNamespace, ok2 := pod.GetAnnotations()["kubernetes.io/source-namespace"]
 	sourceContainer, ok3 := pod.GetAnnotations()["kubernetes.io/source-container"]
-	sourceNodeName, ok4 := pod.GetAnnotations()["kubernetes.io/source-node"]
+	sourceNode, ok4 := pod.GetAnnotations()["kubernetes.io/source-node"]
 	if !ok1 || !ok2 || !ok3 || !ok4 {
 		return "", errors.New("unable to find source Pod")
 	}
 
-	klog.InfoS("Retrieving endpoints", "pod", sourcePodName, "namespace", sourceNamespace, "container", sourceContainer, "node", sourceNodeName)
+	klog.InfoS("Retrieving endpoints", "pod", sourcePodName, "namespace", sourceNamespace, "container", sourceContainer, "node", sourceNode)
 
-	checkpointEndpoint := fmt.Sprintf("https://kubernetes.default.svc.cluster.local/api/v1/nodes/%s/proxy/checkpoint/%s/%s/%s", sourceNodeName, sourceNamespace, sourcePodName, sourceContainer)
+	// TODO: add the -k flag, the key and cert flags to allow authentication temporarily
+	certFile := "/var/run/kubernetes/client-admin.crt"
+	keyFile := "/var/run/kubernetes/client-admin.key"
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		klog.Errorf("Error loading certificate/key pair: %v\n", err)
+		return "", err
+	}
+	tlsConfig := &tls.Config{
+		Certificates:       []tls.Certificate{cert},
+		InsecureSkipVerify: true, // Equivalent to -k in curl; disables certificate validation
+	}
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	client := &http.Client{Transport: transport}
+	checkpointEndpoint := fmt.Sprintf("https://%s/checkpoint/%s/%s/%s", sourceNode, sourceNamespace, sourcePodName, sourceContainer)
 
-	checkpointResp, err := http.Post(checkpointEndpoint, "application/json", nil)
+	req, err := http.NewRequest("POST", checkpointEndpoint, nil)
+	checkpointResp, err := client.Do(req)
 	if err != nil {
 		klog.ErrorS(err, "Failed to call the checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
 		return "", err

@@ -1112,8 +1112,8 @@ func (m *kubeGenericRuntimeManager) isCheckpoint(pod *v1.Pod) bool {
 		return false
 	}
 
-	_, podExists := annotations["checkpoint-pod"]
-	_, namespaceExists := annotations["checkpoint-namespace"]
+	_, podExists := annotations["kubernetes.io/source-pod"]
+	_, namespaceExists := annotations["kubernetes.io/source-namespace"]
 
 	return podExists && namespaceExists
 }
