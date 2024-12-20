@@ -39,6 +39,18 @@ var (
 
 	// ErrInvalidImageName - Unable to parse the image name.
 	ErrInvalidImageName = errors.New("InvalidImageName")
+
+	// ErrImageCheckpointBackOff - Unable to checkpoint image in the source node, kubelet is backing off image checkpoint
+	ErrImageCheckpointBackOff = errors.New("ErrImageCheckpointBackOff")
+
+	// ErrImageRetrieveCheckpointBackOff - Unable to retrieve checkpoint from the source node, kubelet is backing off retrieving checkpoint
+	ErrImageRetrieveCheckpointBackOff = errors.New("ErrImageRetrieveCheckpointBackOff")
+
+	// ErrImageRestore - Container checkpoint/restore failed
+	ErrImageRestore = errors.New("ErrImageRestore")
+
+	// ErrInvalidSourcePodSpec - Unable to parse the pod spec.
+	ErrInvalidSourcePodSpec = errors.New("InvalidSourcePodSpec")
 )
 
 // ImageManager provides an interface to manage the lifecycle of images.
@@ -51,4 +63,8 @@ type ImageManager interface {
 	EnsureImageExists(ctx context.Context, objRef *v1.ObjectReference, pod *v1.Pod, imgRef string, pullSecrets []v1.Secret, podSandboxConfig *runtimeapi.PodSandboxConfig, podRuntimeHandler string, pullPolicy v1.PullPolicy) (string, string, error)
 
 	// TODO(ronl): consolidating image managing and deleting operation in this interface
+}
+
+type CheckpointManager interface {
+	EnsureCheckpointExists(ctx context.Context, pod *v1.Pod, container *v1.Container) (string, string, error)
 }

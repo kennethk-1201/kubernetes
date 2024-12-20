@@ -18,13 +18,10 @@ package kuberuntime
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -331,82 +328,6 @@ func (m *kubeGenericRuntimeManager) startContainer(ctx context.Context, podSandb
 	return "", nil
 }
 
-func sendKubeletRequest(method string, endpoint string, body io.Reader) (*http.Response, error) {
-	certFile := "/var/run/kubernetes/client-admin.crt"
-	keyFile := "/var/run/kubernetes/client-admin.key"
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		klog.Errorf("Error loading certificate/key pair: %v\n", err)
-		return nil, err
-	}
-	tlsConfig := &tls.Config{
-		Certificates:       []tls.Certificate{cert},
-		InsecureSkipVerify: true, // Equivalent to -k in curl; disables certificate validation
-	}
-	transport := &http.Transport{TLSClientConfig: tlsConfig}
-	client := &http.Client{Transport: transport}
-	req, err := http.NewRequest(method, endpoint, body)
-	return client.Do(req)
-}
-
-func ensureCheckpointExists(pod *v1.Pod) error {
-	sourcePodName, ok1 := pod.GetAnnotations()["kubernetes.io/source-pod"]
-	sourceNamespace, ok2 := pod.GetAnnotations()["kubernetes.io/source-namespace"]
-	sourceContainer, ok3 := pod.GetAnnotations()["kubernetes.io/source-container"]
-	sourceNode, ok4 := pod.GetAnnotations()["kubernetes.io/source-node"]
-	if !ok1 || !ok2 || !ok3 || !ok4 {
-		return errors.New("unable to find source Pod")
-	}
-
-	klog.InfoS("Retrieving endpoints", "pod", sourcePodName, "namespace", sourceNamespace, "container", sourceContainer, "node", sourceNode)
-
-	// Step 1: Create checkpoint
-	checkpointEndpoint := fmt.Sprintf("https://%s:10250/checkpoint/%s/%s/%s", sourceNode, sourceNamespace, sourcePodName, sourceContainer)
-	checkpointResp, err := sendKubeletRequest(http.MethodPost, checkpointEndpoint, nil)
-	if err != nil {
-		klog.ErrorS(err, "[restoreContainer] Failed to call the checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
-		return err
-	}
-	defer checkpointResp.Body.Close()
-	if checkpointResp.StatusCode != http.StatusOK {
-		body, readErr := ioutil.ReadAll(checkpointResp.Body)
-		if readErr != nil {
-			fmt.Printf("[restoreContainer] Error reading error response: %v\n", readErr)
-		}
-		klog.Errorf("[restoreContainer] Checkpoint response not ok: %s", body)
-		return errors.New("source node failed to checkpoint: ")
-	}
-
-	// Step 2: Retrieve checkpoint
-	getCheckpointResp, err := sendKubeletRequest(http.MethodGet, checkpointEndpoint, nil)
-	if err != nil {
-		klog.ErrorS(err, "[restoreContainer] Failed to retrieve from checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
-		return err
-	}
-	defer getCheckpointResp.Body.Close()
-	if getCheckpointResp.StatusCode != http.StatusOK {
-		klog.ErrorS(err, "[restoreContainer] Failed to call the retrieve checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
-		return errors.New("source node failed to retrieve checkpoint")
-	}
-
-	// Step 3: Save checkpoint
-	checkpointPath := "/home/vagrant/test-checkpoint.tar"
-	outFile, err := os.Create(checkpointPath)
-	if err != nil {
-		klog.ErrorS(err, "[restoreContainer] Failed to create tarfile", "path", checkpointPath)
-		return err
-	}
-	defer outFile.Close()
-
-	_, err = io.Copy(outFile, getCheckpointResp.Body)
-	if err != nil {
-		klog.ErrorS(err, "[restoreContainer] Failed to copy tarfile", "path", checkpointPath)
-		return err
-	}
-
-	return nil
-}
-
 // restoreContainer starts a container and returns a message indicates why it is failed on error.
 // It starts the container through the following steps:
 // * retrieves the checkpoint
@@ -416,31 +337,13 @@ func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSan
 	// Step 1: retrieve the checkpoint
 	klog.InfoS("Entered restore workflow")
 
-	err := ensureCheckpointExists(pod)
-	if err != nil {
-		return "", err
-	}
-
-	// original code
 	container := spec.container
-
-	podRuntimeHandler, err := m.getPodRuntimeHandler(pod)
-	if err != nil {
-		return "", err
-	}
-
-	ref, err := kubecontainer.GenerateContainerRef(pod, container)
-	if err != nil {
-		klog.ErrorS(err, "Couldn't make a ref to pod", "pod", klog.KObj(pod), "containerName", container.Name)
-	}
-
-	imageRef, msg, err := m.imagePuller.EnsureImageExists(ctx, ref, pod, container.Image, pullSecrets, podSandboxConfig, podRuntimeHandler, container.ImagePullPolicy)
+	imageRef, msg, err := m.checkpointPuller.EnsureCheckpointExists(ctx, pod, container)
 	if err != nil {
 		s, _ := grpcstatus.FromError(err)
 		m.recordContainerEvent(pod, container, "", v1.EventTypeWarning, events.FailedToCreateContainer, "Error: %v", s.Message())
 		return msg, err
 	}
-
 	// Step 2: create the container.
 	// For a new container, the RestartCount should be 0
 	restartCount := 0

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	clientset "k8s.io/client-go/kubernetes"
 	"os"
 	"path/filepath"
 	"sort"
@@ -134,6 +135,9 @@ type kubeGenericRuntimeManager struct {
 	// wrapped image puller.
 	imagePuller images.ImageManager
 
+	// wrapped checkpoint puller
+	checkpointPuller images.CheckpointManager
+
 	// gRPC service clients
 	runtimeService internalapi.RuntimeService
 	imageService   internalapi.ImageManagerService
@@ -219,6 +223,7 @@ func NewKubeGenericRuntimeManager(
 	memoryThrottlingFactor float64,
 	podPullingTimeRecorder images.ImagePodPullingTimeRecorder,
 	tracerProvider trace.TracerProvider,
+	kubeClient clientset.Interface,
 ) (KubeGenericRuntime, error) {
 	ctx := context.Background()
 	runtimeService = newInstrumentedRuntimeService(runtimeService)
@@ -278,7 +283,10 @@ func NewKubeGenericRuntimeManager(
 		}
 	}
 	kubeRuntimeManager.keyring = credentialprovider.NewDockerKeyring()
-
+	kubeRuntimeManager.checkpointPuller = images.NewCheckpointManager(
+		kubecontainer.FilterEventRecorder(recorder),
+		kubeClient,
+	)
 	kubeRuntimeManager.imagePuller = images.NewImageManager(
 		kubecontainer.FilterEventRecorder(recorder),
 		kubeRuntimeManager,
@@ -1113,9 +1121,8 @@ func (m *kubeGenericRuntimeManager) isCheckpoint(pod *v1.Pod) bool {
 	}
 
 	_, podExists := annotations["kubernetes.io/source-pod"]
-	_, namespaceExists := annotations["kubernetes.io/source-namespace"]
 
-	return podExists && namespaceExists
+	return podExists
 }
 
 // SyncPod syncs the running pod into the desired pod by executing following steps:
@@ -1313,7 +1320,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 	// currently: "container", "init container" or "ephemeral container"
 	// metricLabel is the label used to describe this type of container in monitoring metrics.
 	// currently: "container", "init_container" or "ephemeral_container"
-	start := func(ctx context.Context, typeName, metricLabel string, spec *startSpec, isNormal bool) error {
+	start := func(ctx context.Context, typeName, metricLabel string, spec *startSpec) error {
 		startContainerResult := kubecontainer.NewSyncResult(kubecontainer.StartContainer, spec.container.Name)
 		result.AddSyncResult(startContainerResult)
 
@@ -1336,8 +1343,8 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 			return err
 		}
 
-		// if annotations exist, do restore workflow
-		if m.isCheckpoint(pod) && isNormal {
+		// only restore if annotation exists and it is a normal containers
+		if m.isCheckpoint(pod) && typeName == "container" {
 			if msg, err := m.restoreContainer(ctx, podSandboxID, podSandboxConfig, spec, pod, podStatus, pullSecrets, podIP, podIPs, imageVolumes); err != nil {
 				// TODO: modify the error handling
 
@@ -1351,10 +1358,11 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 				// known errors that are logged in other places are logged at higher levels here to avoid
 				// repetitive log spam
 				switch {
-				case err == images.ErrImagePullBackOff:
-					klog.V(3).InfoS("Container start failed in pod", "containerType", typeName, "container", spec.container, "pod", klog.KObj(pod), "containerMessage", msg, "err", err)
+				case err == images.ErrImageRetrieveCheckpointBackOff: // TODO: add more cases
+					klog.V(3).InfoS("Container restore failed in pod", "containerType", typeName, "container", spec.container, "pod", klog.KObj(pod), "containerMessage", msg, "err", err)
 				default:
-					utilruntime.HandleError(fmt.Errorf("%v %+v restore failed in pod %v: %v: %s", typeName, spec.container, format.Pod(pod), err, msg))
+					utilruntime.HandleError(fmt.Errorf("%v %+v restor"+
+						"e failed in pod %v: %v: %s", typeName, spec.container, format.Pod(pod), err, msg))
 				}
 				return err
 			}
@@ -1388,14 +1396,14 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 	// are errors starting an init container. In practice init containers will start first since ephemeral
 	// containers cannot be specified on pod creation.
 	for _, idx := range podContainerChanges.EphemeralContainersToStart {
-		start(ctx, "ephemeral container", metrics.EphemeralContainer, ephemeralContainerStartSpec(&pod.Spec.EphemeralContainers[idx]), false)
+		start(ctx, "ephemeral container", metrics.EphemeralContainer, ephemeralContainerStartSpec(&pod.Spec.EphemeralContainers[idx]))
 	}
 
 	if !types.HasRestartableInitContainer(pod) {
 		// Step 6: start the init container.
 		if container := podContainerChanges.NextInitContainerToStart; container != nil {
 			// Start the next init container.
-			if err := start(ctx, "init container", metrics.InitContainer, containerStartSpec(container), false); err != nil {
+			if err := start(ctx, "init container", metrics.InitContainer, containerStartSpec(container)); err != nil {
 				return
 			}
 
@@ -1407,7 +1415,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 		for _, idx := range podContainerChanges.InitContainersToStart {
 			container := &pod.Spec.InitContainers[idx]
 			// Start the next init container.
-			if err := start(ctx, "init container", metrics.InitContainer, containerStartSpec(container), false); err != nil {
+			if err := start(ctx, "init container", metrics.InitContainer, containerStartSpec(container)); err != nil {
 				if podutil.IsRestartableInitContainer(container) {
 					klog.V(4).InfoS("Failed to start the restartable init container for the pod, skipping", "initContainerName", container.Name, "pod", klog.KObj(pod))
 					continue
@@ -1430,7 +1438,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 
 	// Step 8: start containers in podContainerChanges.ContainersToStart.
 	for _, idx := range podContainerChanges.ContainersToStart {
-		start(ctx, "container", metrics.Container, containerStartSpec(&pod.Spec.Containers[idx]), true)
+		start(ctx, "container", metrics.Container, containerStartSpec(&pod.Spec.Containers[idx]))
 	}
 
 	return
