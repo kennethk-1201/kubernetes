@@ -101,7 +101,7 @@ func (m *checkpointManager) retrieveSourcePodInfo(pod *v1.Pod, container *v1.Con
 	}
 
 	klog.Errorf("[retrieveSourcePodInfo] unable to find container %s in pod spec", container.Name)
-	return "", "", "", "", "source container does not exist in pod spec", ErrInvalidSourcePodSpec
+	return "", "", "", "", fmt.Sprintf("source container %s does not exist in list %+v", container.Name, containers), ErrInvalidSourcePodSpec
 }
 
 func (m *checkpointManager) createCheckpoint(checkpointEndpoint string) (string, error) {
