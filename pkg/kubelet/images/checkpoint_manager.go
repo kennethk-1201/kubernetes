@@ -72,11 +72,13 @@ func sendKubeletRequest(method string, endpoint string, body io.Reader) (*http.R
 
 func (m *checkpointManager) retrieveSourcePodInfo(pod *v1.Pod, container *v1.Container) (string, string, string, string, string, error) {
 	if m.kubeClient == nil {
+		klog.Errorf("[retrieveSourcePodInfo] kube client does not exist")
 		return "", "", "", "", "kube client does not exist, unable to retrieve source pod info", ErrImageRestore
 	}
 
 	sourcePodName, nameFound := pod.GetAnnotations()["kubernetes.io/source-pod"]
 	if !nameFound {
+		klog.Errorf("[retrieveSourcePodInfo] source pod annnotation not found")
 		return "", "", "", "", "source pod annotation not specified", ErrInvalidSourcePodSpec
 	}
 
@@ -87,6 +89,7 @@ func (m *checkpointManager) retrieveSourcePodInfo(pod *v1.Pod, container *v1.Con
 
 	sourcePod, err := m.kubeClient.CoreV1().Pods(sourceNamespace).Get(context.Background(), sourcePodName, metav1.GetOptions{})
 	if err != nil {
+		klog.Errorf("[retrieveSourcePodInfo] unable to find pod with name=%s, namespace=%s", sourcePodName, sourceNamespace)
 		return "", "", "", "", "unable to find source Pod", ErrInvalidSourcePodSpec
 	}
 
@@ -97,6 +100,7 @@ func (m *checkpointManager) retrieveSourcePodInfo(pod *v1.Pod, container *v1.Con
 		}
 	}
 
+	klog.Errorf("[retrieveSourcePodInfo] unable to find container %s in pod spec", container.Name)
 	return "", "", "", "", "source container does not exist in pod spec", ErrInvalidSourcePodSpec
 }
 
