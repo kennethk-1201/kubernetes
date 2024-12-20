@@ -131,6 +131,7 @@ func newFakeKubeRuntimeManager(runtimeService internalapi.RuntimeService, imageS
 	kubeRuntimeManager.runtimeName = typedVersion.RuntimeName
 	kubeRuntimeManager.checkpointPuller = images.NewCheckpointManager(
 		kubecontainer.FilterEventRecorder(recorder),
+		nil,
 	)
 	kubeRuntimeManager.imagePuller = images.NewImageManager(
 		kubecontainer.FilterEventRecorder(recorder),
