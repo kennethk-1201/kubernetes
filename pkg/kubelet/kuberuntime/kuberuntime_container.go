@@ -386,8 +386,6 @@ func (m *kubeGenericRuntimeManager) restoreContainer(ctx context.Context, podSan
 		return s.Message(), ErrCreateContainerConfig
 	}
 
-	containerConfig.Image.Image = "/home/vagrant/test-checkpoint.tar" // tell CRI to create this container from a checkpoint
-
 	err = m.internalLifecycle.PreCreateContainer(pod, container, containerConfig)
 	if err != nil {
 		s, _ := grpcstatus.FromError(err)

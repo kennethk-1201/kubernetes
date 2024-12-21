@@ -100,7 +100,7 @@ func (m *checkpointManager) retrieveSourcePodInfo(newPod *v1.Pod, container *v1.
 
 	containers := sourcePod.Spec.Containers
 	for i := 0; i < len(containers); i++ {
-		if containers[i].Name == container.Name { // todo: can change to image check instead? or what should be the pod spec given?
+		if containers[i].Name == container.Name {
 			return sourcePodName, sourceNamespace, container.Name, sourcePod.Status.HostIP, "", nil
 		}
 	}
