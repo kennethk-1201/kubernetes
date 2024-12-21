@@ -1160,12 +1160,6 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 			klog.V(4).InfoS("Stopping PodSandbox for pod, because all other containers are dead", "pod", klog.KObj(pod))
 		}
 
-		// Remove the corresponding checkpoints for this pod
-		checkpointDir := fmt.Sprintf("/var/lib/kubelet/source-checkpoints/%s-%s", pod.Namespace, pod.Name)
-		if err := os.RemoveAll(checkpointDir); err != nil {
-			klog.V(4).InfoS("Unable to find checkpoint directory for pod", "pod", klog.KObj(pod))
-		}
-
 		killResult := m.killPodWithSyncResult(ctx, pod, kubecontainer.ConvertPodStatusToRunningPod(m.runtimeName, podStatus), nil)
 		result.AddPodSyncResult(killResult)
 		if killResult.Error() != nil {
@@ -1217,7 +1211,14 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 		var err error
 
 		// each unique pod (identified by their namespace and name) should own its own directory under /var/lib/kubelet/source-checkpoints
-		checkpointDir := fmt.Sprintf("/var/lib/kubelet/source-checkpoints/%s-%s", pod.Namespace, pod.Name)
+		checkpointDir := fmt.Sprintf("%s/%s-%s", images.SourceCheckpointDir, pod.Namespace, pod.Name)
+
+		// remove old checkpoints in case
+		if err = os.RemoveAll(checkpointDir); err != nil {
+			klog.V(4).InfoS("Unable to find checkpoint directory for pod", "pod", klog.KObj(pod))
+		}
+
+		// create new checkpoint directory for pod
 		if err = os.MkdirAll(checkpointDir, os.ModePerm); err != nil {
 			klog.ErrorS(err, "failed to create checkpoint directory", "pod", klog.KObj(pod))
 			return

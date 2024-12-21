@@ -45,6 +45,8 @@ type checkpointManager struct {
 
 var _ CheckpointManager = &checkpointManager{}
 
+const SourceCheckpointDir = "/var/lib/kubelet/source-checkpoints"
+
 // NewCheckpointManager instantiates a new CheckpointManager object.
 func NewCheckpointManager(recorder record.EventRecorder, kubeClient clientset.Interface) CheckpointManager {
 	return &checkpointManager{
@@ -167,10 +169,10 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, newPod *
 	}
 	klog.InfoS("Retrieving checkpoint", "pod", sourcePodName, "namespace", sourceNamespace, "container", sourceContainer, "node", sourceNode)
 
-	checkpointDir := fmt.Sprintf("/var/lib/kubelet/source-checkpoints/%s-%s", newPod.Namespace, newPod.Name)
+	checkpointDir := fmt.Sprintf("%s/%s-%s", SourceCheckpointDir, newPod.Namespace, newPod.Name)
 	checkpointPath := fmt.Sprintf("%s/checkpoint-%s-%s-%s.tar", checkpointDir, sourceNamespace, sourcePodName, sourceContainer)
 
-	if _, err := os.Stat(checkpointPath); errors.Is(err, os.ErrNotExist) {
+	if _, err = os.Stat(checkpointPath); errors.Is(err, os.ErrNotExist) {
 		// Step 1: Create checkpoint
 		checkpointEndpoint := fmt.Sprintf("https://%s:10250/checkpoint/%s/%s/%s", sourceNode, sourceNamespace, sourcePodName, sourceContainer)
 		if msg, err = m.createCheckpoint(checkpointEndpoint); err != nil {
@@ -188,6 +190,9 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, newPod *
 		}
 
 		return checkpointPath, "successfully retrieved checkpoint", nil
+	} else if err != nil {
+		klog.ErrorS(err, "Failed to check if file exists", "path", checkpointPath)
+		return "", "invalid path", err
 	}
 
 	return checkpointPath, "checkpoint already exists", nil
