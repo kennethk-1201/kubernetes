@@ -32,6 +32,8 @@ import (
 	"os"
 )
 
+const SourceCheckpointsDir = "/var/lib/kubelet/source-checkpoints"
+
 // imageManager provides the functionalities for image pulling.
 type checkpointManager struct {
 	recorder   record.EventRecorder
@@ -44,8 +46,6 @@ type checkpointManager struct {
 }
 
 var _ CheckpointManager = &checkpointManager{}
-
-const SourceCheckpointDir = "/var/lib/kubelet/source-checkpoints"
 
 // NewCheckpointManager instantiates a new CheckpointManager object.
 func NewCheckpointManager(recorder record.EventRecorder, kubeClient clientset.Interface) CheckpointManager {
@@ -143,6 +143,7 @@ func (m *checkpointManager) retrieveCheckpoint(checkpointEndpoint string) (*io.R
 	return &getCheckpointResp.Body, "", nil
 }
 
+// saveCheckpoint saves the raw checkpoint data to a given path on disk.
 func (m *checkpointManager) saveCheckpoint(checkpointData *io.ReadCloser, checkpointPath string) (string, error) {
 	outFile, err := os.Create(checkpointPath)
 	if err != nil {
@@ -160,6 +161,10 @@ func (m *checkpointManager) saveCheckpoint(checkpointData *io.ReadCloser, checkp
 	return "", nil
 }
 
+func (m *checkpointManager) getCheckpointDir(pod *v1.Pod) string {
+	return fmt.Sprintf("%s/%s-%s", SourceCheckpointsDir, pod.Namespace, pod.Name)
+}
+
 // EnsureCheckpointExists pulls the container checkpoint for the specified pod and container, and returns
 // (imageRef, error message, error). The imageRef here is the path of the checkpoint and NOT the image URI.
 func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, newPod *v1.Pod, container *v1.Container) (string, string, error) {
@@ -169,7 +174,7 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, newPod *
 	}
 	klog.InfoS("Retrieving checkpoint", "pod", sourcePodName, "namespace", sourceNamespace, "container", sourceContainer, "node", sourceNode)
 
-	checkpointDir := fmt.Sprintf("%s/%s-%s", SourceCheckpointDir, newPod.Namespace, newPod.Name)
+	checkpointDir := m.getCheckpointDir(newPod)
 	checkpointPath := fmt.Sprintf("%s/checkpoint-%s-%s-%s.tar", checkpointDir, sourceNamespace, sourcePodName, sourceContainer)
 
 	if _, err = os.Stat(checkpointPath); errors.Is(err, os.ErrNotExist) {
@@ -196,4 +201,22 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, newPod *
 	}
 
 	return checkpointPath, "checkpoint already exists", nil
+}
+
+// CreatePodCheckpointDir creates the directory containing all of a pod's source checkpoints.
+func (m *checkpointManager) CreatePodCheckpointDir(pod *v1.Pod) error {
+	checkpointDir := m.getCheckpointDir(pod)
+
+	// remove old checkpoints to prevent inconsistencies
+	if err := os.RemoveAll(checkpointDir); err != nil {
+		klog.V(4).InfoS("Unable to find checkpoint directory for pod", "pod", klog.KObj(pod))
+	}
+
+	// create new checkpoint directory for pod
+	if err := os.MkdirAll(checkpointDir, os.ModePerm); err != nil {
+		klog.ErrorS(err, "Failed to create checkpoint directory", "pod", klog.KObj(pod))
+		return err
+	}
+
+	return nil
 }

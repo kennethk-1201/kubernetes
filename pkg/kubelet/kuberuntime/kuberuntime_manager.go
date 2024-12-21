@@ -1210,17 +1210,8 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 		var msg string
 		var err error
 
-		// each unique pod (identified by their namespace and name) should own its own directory under /var/lib/kubelet/source-checkpoints
-		checkpointDir := fmt.Sprintf("%s/%s-%s", images.SourceCheckpointDir, pod.Namespace, pod.Name)
-
-		// remove old checkpoints in case
-		if err = os.RemoveAll(checkpointDir); err != nil {
-			klog.V(4).InfoS("Unable to find checkpoint directory for pod", "pod", klog.KObj(pod))
-		}
-
-		// create new checkpoint directory for pod
-		if err = os.MkdirAll(checkpointDir, os.ModePerm); err != nil {
-			klog.ErrorS(err, "failed to create checkpoint directory", "pod", klog.KObj(pod))
+		if err = m.checkpointPuller.CreatePodCheckpointDir(pod); err != nil {
+			klog.ErrorS(err, "Failed to create checkpoint directory", "pod", klog.KObj(pod))
 			return
 		}
 
@@ -1357,7 +1348,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 			return err
 		}
 
-		// only restore if annotation exists and it is a normal containers
+		// only restore if annotation exists and it is a normal container
 		if m.isCheckpoint(pod) && typeName == "container" {
 			if msg, err := m.restoreContainer(ctx, podSandboxID, podSandboxConfig, spec, pod, podStatus, pullSecrets, podIP, podIPs, imageVolumes); err != nil {
 				// TODO: modify the error handling
