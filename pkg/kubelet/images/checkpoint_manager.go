@@ -129,12 +129,10 @@ func (m *checkpointManager) retrieveCheckpoint(checkpointEndpoint string) (*io.R
 		klog.ErrorS(err, "[restoreContainer] Failed to retrieve from checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
 		return nil, "unable to reach source node to retrieve checkpoint", ErrImageRetrieveCheckpointBackOff
 	}
-	defer getCheckpointResp.Body.Close()
 	if getCheckpointResp.StatusCode != http.StatusOK {
 		klog.ErrorS(err, "[restoreContainer] Failed to call the retrieve checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
 		return nil, "source node failed to return checkpoint", ErrImageRetrieveCheckpointBackOff
 	}
-
 	return &getCheckpointResp.Body, "", nil
 }
 
