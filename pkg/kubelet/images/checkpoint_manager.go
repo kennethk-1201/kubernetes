@@ -95,7 +95,7 @@ func (m *checkpointManager) retrieveSourcePodInfo(pod *v1.Pod, container *v1.Con
 
 	containers := sourcePod.Spec.Containers
 	for i := 0; i < len(containers); i++ {
-		if containers[i].Name == container.Name {
+		if containers[i].Name == container.Name { // todo: can change to image check instead? or what should be the pod spec given?
 			return sourcePodName, sourceNamespace, container.Name, sourcePod.Status.HostIP, "", nil
 		}
 	}
@@ -162,7 +162,6 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, pod *v1.
 	if err != nil {
 		return "", msg, err
 	}
-
 	klog.InfoS("Retrieving checkpoint", "pod", sourcePodName, "namespace", sourceNamespace, "container", sourceContainer, "node", sourceNode)
 
 	// Step 1: Create checkpoint
@@ -170,14 +169,13 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, pod *v1.
 	if msg, err = m.createCheckpoint(checkpointEndpoint); err != nil {
 		return "", msg, err
 	}
-
 	// Step 2: Retrieve checkpoint
 	checkpointData, msg, err := m.retrieveCheckpoint(checkpointEndpoint)
 	if err != nil {
 		return "", msg, err
 	}
-
 	// Step 3: Save checkpoint
+	defer (*checkpointData).Close()
 	checkpointPath := "/home/vagrant/test-checkpoint.tar"
 	if msg, err = m.saveCheckpoint(checkpointData, checkpointPath); err != nil {
 		return "", msg, err
