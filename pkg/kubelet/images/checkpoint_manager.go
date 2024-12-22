@@ -171,10 +171,6 @@ func (m *checkpointManager) getCheckpointDir(pod *v1.Pod) string {
 	return fmt.Sprintf("%s/%s-%s", SourceCheckpointsDir, pod.Namespace, pod.Name)
 }
 
-func (m *checkpointManager) getCheckpointEndpoint() {
-
-}
-
 // EnsureCheckpointExists pulls the container checkpoint for the specified pod and container, and returns
 // (imageRef, error message, error). The imageRef here is the path of the checkpoint and NOT the image URI.
 func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, newPod *v1.Pod, container *v1.Container) (string, string, error) {
