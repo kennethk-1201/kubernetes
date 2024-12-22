@@ -46,7 +46,7 @@ var (
 	// ErrImageRetrieveCheckpointBackOff - Unable to retrieve checkpoint from the source node, kubelet is backing off retrieving checkpoint
 	ErrImageRetrieveCheckpointBackOff = errors.New("ErrImageRetrieveCheckpointBackOff")
 
-	// ErrImageRestore - Container checkpoint/restore failed
+	// ErrImageRestore - General checkpoint restore error
 	ErrImageRestore = errors.New("ErrImageRestore")
 
 	// ErrInvalidSourcePodSpec - Unable to parse the pod spec.
@@ -66,6 +66,6 @@ type ImageManager interface {
 }
 
 type CheckpointManager interface {
-	CreatePodCheckpointDir(pod *v1.Pod) error
+	CreatePodCheckpointStore(pod *v1.Pod) error
 	EnsureCheckpointExists(ctx context.Context, pod *v1.Pod, container *v1.Container) (string, string, error)
 }

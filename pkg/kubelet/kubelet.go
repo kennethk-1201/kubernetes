@@ -3139,7 +3139,7 @@ func (kl *Kubelet) CheckpointContainer(
 }
 
 func (kl *Kubelet) GetCheckpoint(podFullName, containerName string) ([]byte, error) {
-	checkpointDir := "/var/lib/kubelet/checkpoints"
+	checkpointDir := kl.getCheckpointsDir()
 	files, err := os.ReadDir(checkpointDir)
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint directory not found")

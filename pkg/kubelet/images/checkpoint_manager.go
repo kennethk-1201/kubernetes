@@ -203,8 +203,8 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, newPod *
 	return checkpointPath, "checkpoint already exists", nil
 }
 
-// CreatePodCheckpointDir creates the directory containing all of a pod's source checkpoints.
-func (m *checkpointManager) CreatePodCheckpointDir(pod *v1.Pod) error {
+// CreatePodCheckpointStore creates the directory containing all of a pod's source checkpoints.
+func (m *checkpointManager) CreatePodCheckpointStore(pod *v1.Pod) error {
 	checkpointDir := m.getCheckpointDir(pod)
 
 	// remove old checkpoints to prevent inconsistencies
