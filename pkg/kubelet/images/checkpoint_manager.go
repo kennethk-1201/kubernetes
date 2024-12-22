@@ -73,6 +73,10 @@ func sendKubeletRequest(method string, endpoint string, body io.Reader) (*http.R
 	transport := &http.Transport{TLSClientConfig: tlsConfig}
 	client := &http.Client{Transport: transport}
 	req, err := http.NewRequest(method, endpoint, body)
+	if err != nil {
+		klog.Errorf("Error creating request: %v\n", err)
+		return nil, err
+	}
 	return client.Do(req)
 }
 
@@ -167,10 +171,14 @@ func (m *checkpointManager) getCheckpointDir(pod *v1.Pod) string {
 	return fmt.Sprintf("%s/%s-%s", SourceCheckpointsDir, pod.Namespace, pod.Name)
 }
 
+func (m *checkpointManager) getCheckpointEndpoint() {
+
+}
+
 // EnsureCheckpointExists pulls the container checkpoint for the specified pod and container, and returns
 // (imageRef, error message, error). The imageRef here is the path of the checkpoint and NOT the image URI.
 func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, newPod *v1.Pod, container *v1.Container) (string, string, error) {
-	sourcePodName, sourceNamespace, sourceContainer, sourceNode, msg, err := m.retrieveSourcePodInfo(newPod, container)
+	sourcePodName, sourceNamespace, sourceContainer, sourceNodeIP, msg, err := m.retrieveSourcePodInfo(newPod, container)
 	if err != nil {
 		return "", msg, err
 	}
@@ -181,7 +189,7 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, newPod *
 
 	if _, err = os.Stat(checkpointPath); errors.Is(err, os.ErrNotExist) {
 		// Step 1: Create checkpoint
-		checkpointEndpoint := fmt.Sprintf("https://%s:%s/checkpoint/%s/%s/%s", sourceNode, ports.KubeletPort, sourceNamespace, sourcePodName, sourceContainer)
+		checkpointEndpoint := fmt.Sprintf("https://%s:%d/checkpoint/%s/%s/%s", sourceNodeIP, ports.KubeletPort, sourceNamespace, sourcePodName, sourceContainer)
 		if msg, err = m.createCheckpoint(checkpointEndpoint); err != nil {
 			return "", msg, err
 		}
