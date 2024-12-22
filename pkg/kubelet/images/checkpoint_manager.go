@@ -28,11 +28,14 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/cluster/ports"
 	"net/http"
 	"os"
 )
 
 const SourceCheckpointsDir = "/var/lib/kubelet/source-checkpoints"
+const HttpsCertFile = "/var/run/kubernetes/client-admin.crt"
+const HttpsKeyFile = "/var/run/kubernetes/client-admin.key"
 
 // imageManager provides the functionalities for image pulling.
 type checkpointManager struct {
@@ -40,6 +43,7 @@ type checkpointManager struct {
 	kubeClient clientset.Interface
 
 	// TODO:
+	// - add secure connection for kubelet request
 	// - implement backoff logic
 	// - implement event recorder logic
 	// - eventually shift core logic down to crio
@@ -57,9 +61,7 @@ func NewCheckpointManager(recorder record.EventRecorder, kubeClient clientset.In
 
 // sendKubeletRequest prepares the necessary request information to communicate with another kubelet's API.
 func sendKubeletRequest(method string, endpoint string, body io.Reader) (*http.Response, error) {
-	certFile := "/var/run/kubernetes/client-admin.crt"
-	keyFile := "/var/run/kubernetes/client-admin.key"
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	cert, err := tls.LoadX509KeyPair(HttpsCertFile, HttpsKeyFile)
 	if err != nil {
 		klog.Errorf("Error loading certificate/key pair: %v\n", err)
 		return nil, err
@@ -179,7 +181,7 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, newPod *
 
 	if _, err = os.Stat(checkpointPath); errors.Is(err, os.ErrNotExist) {
 		// Step 1: Create checkpoint
-		checkpointEndpoint := fmt.Sprintf("https://%s:10250/checkpoint/%s/%s/%s", sourceNode, sourceNamespace, sourcePodName, sourceContainer)
+		checkpointEndpoint := fmt.Sprintf("https://%s:%s/checkpoint/%s/%s/%s", sourceNode, ports.KubeletPort, sourceNamespace, sourcePodName, sourceContainer)
 		if msg, err = m.createCheckpoint(checkpointEndpoint); err != nil {
 			return "", msg, err
 		}

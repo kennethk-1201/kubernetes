@@ -3138,14 +3138,16 @@ func (kl *Kubelet) CheckpointContainer(
 	return nil
 }
 
-func (kl *Kubelet) GetCheckpoint(podFullName, containerName string) ([]byte, error) {
+// GetLatestCheckpoint tries to retrieve the latest checkpoint for a given container in a Pod within a namespace.
+// Note that podFullName is represented as <pod-name>_<pod-namespace>.
+func (kl *Kubelet) GetLatestCheckpoint(podFullName, containerName string) ([]byte, error) {
 	checkpointDir := kl.getCheckpointsDir()
 	files, err := os.ReadDir(checkpointDir)
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint directory not found")
 	}
 
-	// Get the file name with the latest time
+	// Step 1: Get all checkpoints for a container using the file name prefix
 	var checkpointTimes []time.Time
 	fileNamePrefix := fmt.Sprintf(
 		"checkpoint-%s-%s-",
@@ -3172,6 +3174,7 @@ func (kl *Kubelet) GetCheckpoint(podFullName, containerName string) ([]byte, err
 		return nil, fmt.Errorf("checkpoint not found")
 	}
 
+	// Step 2: Get the latest checkpoint
 	sort.Slice(checkpointTimes, func(i, j int) bool {
 		return checkpointTimes[i].Before(checkpointTimes[j])
 	})
