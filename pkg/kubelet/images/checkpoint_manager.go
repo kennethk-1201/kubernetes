@@ -182,7 +182,7 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, newPod *
 	if err != nil {
 		return "", msg, err
 	}
-	klog.InfoS("Retrieving checkpoint", "pod", sourcePodName, "namespace", sourceNamespace, "container", sourceContainer, "node", sourceNode)
+	klog.InfoS("Retrieving checkpoint", "pod", sourcePodName, "namespace", sourceNamespace, "container", sourceContainer, "node", sourceNodeIP)
 
 	checkpointDir := m.getCheckpointDir(newPod)
 	checkpointPath := fmt.Sprintf("%s/checkpoint-%s-%s-%s.tar", checkpointDir, sourceNamespace, sourcePodName, sourceContainer)
