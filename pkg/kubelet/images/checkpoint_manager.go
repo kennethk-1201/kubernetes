@@ -19,6 +19,7 @@ package images
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -29,18 +30,21 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/cluster/ports"
+	"k8s.io/kubernetes/pkg/kubelet/server"
 	"net/http"
 	"os"
 )
 
 const SourceCheckpointsDir = "/var/lib/kubelet/source-checkpoints"
-const HttpsCertFile = "/var/run/kubernetes/client-admin.crt"
-const HttpsKeyFile = "/var/run/kubernetes/client-admin.key"
+const HttpsKeyFile = "/var/lib/kubelet/pki/kubelet-client-current.pem"
+const HttpsCertFile = "/var/lib/kubelet/pki/kubelet-client-current.pem"
+const CACertFile = "/etc/kubernetes/pki/ca.crt"
 
 // imageManager provides the functionalities for image pulling.
 type checkpointManager struct {
 	recorder   record.EventRecorder
 	kubeClient clientset.Interface
+	TLSOptions *server.TLSOptions
 
 	// TODO:
 	// - add secure connection for kubelet request
@@ -52,24 +56,48 @@ type checkpointManager struct {
 var _ CheckpointManager = &checkpointManager{}
 
 // NewCheckpointManager instantiates a new CheckpointManager object.
-func NewCheckpointManager(recorder record.EventRecorder, kubeClient clientset.Interface) CheckpointManager {
+func NewCheckpointManager(recorder record.EventRecorder, kubeClient clientset.Interface, TLSOptions *server.TLSOptions) CheckpointManager {
 	return &checkpointManager{
 		recorder:   recorder,
 		kubeClient: kubeClient,
+		TLSOptions: TLSOptions,
 	}
 }
 
 // sendKubeletRequest prepares the necessary request information to communicate with another kubelet's API.
-func sendKubeletRequest(method string, endpoint string, body io.Reader) (*http.Response, error) {
+func (m *checkpointManager) sendKubeletRequest(method string, endpoint string, body io.Reader) (*http.Response, error) {
+	var tlsConfig *tls.Config
+	// add client private key and cert
 	cert, err := tls.LoadX509KeyPair(HttpsCertFile, HttpsKeyFile)
 	if err != nil {
 		klog.Errorf("Error loading certificate/key pair: %v\n", err)
 		return nil, err
 	}
-	tlsConfig := &tls.Config{
-		Certificates:       []tls.Certificate{cert},
-		InsecureSkipVerify: true, // Equivalent to -k in curl; disables certificate validation
+	// add the CA used to verify the source node's certificate
+	if _, err := os.Stat(CACertFile); err == nil {
+		caCert, err := ioutil.ReadFile(CACertFile)
+		if err != nil {
+			klog.Errorf("Failed to read CA certificate: %v\n", err)
+			return nil, err
+		}
+
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+
+		tlsConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			RootCAs:      caCertPool,
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		tlsConfig = &tls.Config{
+			Certificates:       []tls.Certificate{cert},
+			InsecureSkipVerify: true,
+		}
+	} else {
+		klog.Errorf("Unable to determine if CA cert exists: %v\n", err)
+		return nil, err
 	}
+
 	transport := &http.Transport{TLSClientConfig: tlsConfig}
 	client := &http.Client{Transport: transport}
 	req, err := http.NewRequest(method, endpoint, body)
@@ -117,7 +145,7 @@ func (m *checkpointManager) retrieveSourcePodInfo(newPod *v1.Pod, container *v1.
 
 // createCheckpoint creates the checkpoint in the source node.
 func (m *checkpointManager) createCheckpoint(checkpointEndpoint string) (string, error) {
-	checkpointResp, err := sendKubeletRequest(http.MethodPost, checkpointEndpoint, nil)
+	checkpointResp, err := m.sendKubeletRequest(http.MethodPost, checkpointEndpoint, nil)
 	if err != nil {
 		klog.ErrorS(err, "[restoreContainer] Failed to call the checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
 		return "unable to reach source node to checkpoint image", ErrImageCheckpointBackOff
@@ -137,7 +165,7 @@ func (m *checkpointManager) createCheckpoint(checkpointEndpoint string) (string,
 
 // retrieveCheckpoint retrieves the checkpoint from the source node.
 func (m *checkpointManager) retrieveCheckpoint(checkpointEndpoint string) (*io.ReadCloser, string, error) {
-	getCheckpointResp, err := sendKubeletRequest(http.MethodGet, checkpointEndpoint, nil)
+	getCheckpointResp, err := m.sendKubeletRequest(http.MethodGet, checkpointEndpoint, nil)
 	if err != nil {
 		klog.ErrorS(err, "[restoreContainer] Failed to retrieve from checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
 		return nil, "unable to reach source node to retrieve checkpoint", ErrImageRetrieveCheckpointBackOff

@@ -745,6 +745,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		kubeDeps.PodStartupLatencyTracker,
 		kubeDeps.TracerProvider,
 		klet.kubeClient,
+		kubeDeps.TLSOptions,
 	)
 	if err != nil {
 		return nil, err
