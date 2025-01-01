@@ -41,10 +41,10 @@ var (
 	ErrInvalidImageName = errors.New("InvalidImageName")
 
 	// ErrImageCheckpointBackOff - Unable to checkpoint image in the source node, kubelet is backing off image checkpoint
-	ErrImageCheckpointBackOff = errors.New("ErrImageCheckpointBackOff")
+	ErrCheckpointPullBackOff = errors.New("ErrCheckpointPullBackOff")
 
-	// ErrImageRetrieveCheckpointBackOff - Unable to retrieve checkpoint from the source node, kubelet is backing off retrieving checkpoint
-	ErrImageRetrieveCheckpointBackOff = errors.New("ErrImageRetrieveCheckpointBackOff")
+	// ErrImageRetrieveCheckpoint - Unable to retrieve checkpoint from the source node, kubelet is backing off retrieving checkpoint
+	ErrCheckpointPull = errors.New("ErrCheckpointPull")
 
 	// ErrImageRestore - General checkpoint restore error
 	ErrImageRestore = errors.New("ErrImageRestore")

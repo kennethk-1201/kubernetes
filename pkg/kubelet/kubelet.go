@@ -157,6 +157,9 @@ const (
 	// MaxImageBackOff is the max backoff period for image pulls, exported for the e2e test
 	MaxImageBackOff = 300 * time.Second
 
+	// MaxCheckpointBackOff is the max backoff period for checkpoint pulls
+	MaxCheckpointBackOff = 300 * time.Second
+
 	// Period for performing global cleanup tasks.
 	housekeepingPeriod = time.Second * 2
 
@@ -207,6 +210,9 @@ const (
 
 	// Initial period for the exponential backoff for image pulls.
 	imageBackOffPeriod = time.Second * 10
+
+	// Initial period for the exponential backoff for checkpoint pulls.
+	checkpointBackOffPeriod = time.Second * 10
 
 	// ContainerGCPeriod is the period for performing container garbage collection.
 	ContainerGCPeriod = time.Minute
@@ -653,6 +659,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	klet.setCachedMachineInfo(machineInfo)
 
 	imageBackOff := flowcontrol.NewBackOff(imageBackOffPeriod, MaxImageBackOff)
+	checkpointBackOff := flowcontrol.NewBackOff(checkpointBackOffPeriod, MaxCheckpointBackOff)
 
 	klet.livenessManager = proberesults.NewManager()
 	klet.readinessManager = proberesults.NewManager()
@@ -724,6 +731,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		klet,
 		insecureContainerLifecycleHTTPClient,
 		imageBackOff,
+		checkpointBackOff,
 		kubeCfg.SerializeImagePulls,
 		kubeCfg.MaxParallelImagePulls,
 		float32(kubeCfg.RegistryPullQPS),
@@ -745,7 +753,6 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		kubeDeps.PodStartupLatencyTracker,
 		kubeDeps.TracerProvider,
 		klet.kubeClient,
-		kubeDeps.TLSOptions,
 	)
 	if err != nil {
 		return nil, err

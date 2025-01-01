@@ -54,6 +54,7 @@ const (
 	PulledCheckpoint          = "PulledCheckpoint"
 	FailedToInspectCheckpoint = "InspectCheckpointFailed"
 	FailedToPullCheckpoint    = "FailedToPullCheckpoint"
+	BackOffPullCheckpoint     = "BackOffCheckpoint"
 )
 
 // kubelet event reason list

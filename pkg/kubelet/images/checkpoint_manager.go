@@ -27,11 +27,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/cluster/ports"
 	"k8s.io/kubernetes/pkg/kubelet/events"
 	"net/http"
 	"os"
+	"sync"
 )
 
 const SourceCheckpointsDir = "/var/lib/kubelet/source-checkpoints"
@@ -41,23 +43,25 @@ const CACertFile = "/etc/kubernetes/pki/ca.crt"
 
 // checkpointManager provides the functionalities for checkpoint pulling and restoring.
 type checkpointManager struct {
-	recorder   record.EventRecorder
-	kubeClient clientset.Interface
+	recorder       record.EventRecorder
+	kubeClient     clientset.Interface
+	backOff        *flowcontrol.Backoff
+	prevPullErrMsg sync.Map
 
 	// TODO:
 	// - add secure connection for kubelet request
 	// - implement backoff logic
-	// - implement event recorder logic
 	// - eventually shift core logic down to crio
 }
 
 var _ CheckpointManager = &checkpointManager{}
 
 // NewCheckpointManager instantiates a new CheckpointManager object.
-func NewCheckpointManager(recorder record.EventRecorder, kubeClient clientset.Interface) CheckpointManager {
+func NewCheckpointManager(recorder record.EventRecorder, kubeClient clientset.Interface, checkpointBackOff *flowcontrol.Backoff) CheckpointManager {
 	return &checkpointManager{
 		recorder:   recorder,
 		kubeClient: kubeClient,
+		backOff:    checkpointBackOff,
 	}
 }
 
@@ -166,7 +170,7 @@ func (m *checkpointManager) retrieveCheckpoint(checkpointEndpoint string) (*io.R
 		return nil, "unable to reach source node to retrieve checkpoint", err
 	}
 	if getCheckpointResp.StatusCode != http.StatusOK {
-		return nil, "source node failed to return checkpoint", ErrImageRetrieveCheckpointBackOff
+		return nil, "source node failed to return checkpoint", errors.New("source node status code not ok")
 	}
 	return &getCheckpointResp.Body, "", nil
 }
@@ -194,7 +198,7 @@ func (m *checkpointManager) getCheckpointDir(pod *v1.Pod) string {
 // checkpointPullPrecheck checks for checkpoint presence in the local disk and returns (imageRef, exists, err).
 func (m *checkpointManager) checkpointPullPrecheck(ctx context.Context, sourcePod *v1.Pod, newPod *v1.Pod, sourceContainer *v1.Container) (string, bool, error) {
 	checkpointDir := m.getCheckpointDir(newPod)
-	imageRef := fmt.Sprintf("%s/checkpoint-%s-%s-%s.tar", checkpointDir, sourcePod.Namespace, sourcePod.Name, sourceContainer)
+	imageRef := fmt.Sprintf("%s/checkpoint-%s-%s-%s.tar", checkpointDir, sourcePod.Namespace, sourcePod.Name, sourceContainer.Name)
 
 	if _, err := os.Stat(imageRef); errors.Is(err, os.ErrNotExist) {
 		return imageRef, false, nil
@@ -214,19 +218,19 @@ func (m *checkpointManager) pullCheckpoint(ctx context.Context, sourcePod *v1.Po
 	// Create checkpoint in the source node.
 	checkpointEndpoint := fmt.Sprintf("https://%s:%d/checkpoint/%s/%s/%s", sourcePod.Status.HostIP, ports.KubeletPort, sourcePod.Namespace, sourcePod.Name, container.Name)
 	if msg, err = m.createCheckpoint(checkpointEndpoint); err != nil {
-		return fmt.Sprintf("Failed to create checkpoint %q: %v", container.Name, err), ErrImageCheckpointBackOff
+		return fmt.Sprintf("Failed to create checkpoint %q: %v", container.Name, err), ErrCheckpointPull
 	}
 
 	// Retrieve checkpoint from the source node.
 	checkpointData, msg, err := m.retrieveCheckpoint(checkpointEndpoint)
 	if err != nil {
-		return fmt.Sprintf("Failed to retrieve checkpoint %q: %v", container.Name, err), ErrImageRetrieveCheckpointBackOff
+		return fmt.Sprintf("Failed to retrieve checkpoint %q: %v", container.Name, err), ErrCheckpointPull
 	}
 
 	// Save checkpoint to disk.
 	defer (*checkpointData).Close()
 	if msg, err = m.saveCheckpoint(checkpointData, imageRef); err != nil {
-		return fmt.Sprintf("Failed to save checkpoint %q: %v", container.Name, err), ErrImageRetrieveCheckpointBackOff
+		return fmt.Sprintf("Failed to save checkpoint %q: %v", container.Name, err), ErrCheckpointPull
 	}
 
 	return "", nil
@@ -244,7 +248,6 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, objRef *
 		m.logIt(objRef, v1.EventTypeWarning, events.FailedToInspectCheckpoint, logPrefix, msg, klog.Warning)
 		return "", msg, err
 	}
-	m.logIt(objRef, v1.EventTypeNormal, events.PullingCheckpoint, logPrefix, fmt.Sprintf("Pulling checkpoint %q", container.Name), klog.Info)
 
 	// Check if checkpoint already exists. If it exists, then return the imageRef.
 	imageRef, exists, err := m.checkpointPullPrecheck(ctx, sourcePod, newPod, sourceContainer)
@@ -260,12 +263,38 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, objRef *
 	}
 
 	// If the checkpoint does not exist, pull the checkpoint from the source node
+	backOffKey := fmt.Sprintf("%s_%s", newPod.UID, imageRef)
+	if m.backOff.IsInBackOffSinceUpdate(backOffKey, m.backOff.Clock.Now()) {
+		msg = fmt.Sprintf("Back-off pulling checkpoint %q", imageRef)
+		m.logIt(objRef, v1.EventTypeNormal, events.BackOffPullCheckpoint, logPrefix, msg, klog.Info)
+
+		// Wrap the error from the actual pull if available.
+		// This information is populated to the pods
+		// .status.containerStatuses[*].state.waiting.message.
+		prevPullErrMsg, ok := m.prevPullErrMsg.Load(backOffKey)
+		if ok {
+			msg = fmt.Sprintf("%s: %s", msg, prevPullErrMsg)
+		}
+
+		return "", msg, ErrCheckpointPullBackOff
+	}
+
+	// Ensure that the map cannot grow indefinitely.
+	m.prevPullErrMsg.Delete(backOffKey)
+	m.logIt(objRef, v1.EventTypeNormal, events.PullingCheckpoint, logPrefix, fmt.Sprintf("Pulling checkpoint %q", container.Name), klog.Info)
+
 	if msg, err = m.pullCheckpoint(ctx, sourcePod, container, imageRef); err != nil {
 		m.logIt(objRef, v1.EventTypeWarning, events.FailedToPullCheckpoint, logPrefix, msg, klog.Warning)
+		m.backOff.Next(backOffKey, m.backOff.Clock.Now())
+
+		// Store the actual pull error for providing that information during
+		// the image pull back-off.
+		m.prevPullErrMsg.Store(backOffKey, fmt.Sprintf("%s: %s", err, msg))
 		return "", msg, err
 	}
 
 	m.logIt(objRef, v1.EventTypeNormal, events.PulledCheckpoint, logPrefix, msg, klog.Info)
+	m.backOff.GC()
 	return imageRef, "successfully retrieved checkpoint", nil
 }
 

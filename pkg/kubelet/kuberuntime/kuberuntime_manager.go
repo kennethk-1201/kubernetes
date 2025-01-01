@@ -62,7 +62,6 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/pleg"
 	proberesults "k8s.io/kubernetes/pkg/kubelet/prober/results"
 	"k8s.io/kubernetes/pkg/kubelet/runtimeclass"
-	"k8s.io/kubernetes/pkg/kubelet/server"
 	"k8s.io/kubernetes/pkg/kubelet/sysctl"
 	"k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/kubelet/util/cache"
@@ -204,6 +203,7 @@ func NewKubeGenericRuntimeManager(
 	runtimeHelper kubecontainer.RuntimeHelper,
 	insecureContainerLifecycleHTTPClient types.HTTPDoer,
 	imageBackOff *flowcontrol.Backoff,
+	checkpointBackOff *flowcontrol.Backoff,
 	serializeImagePulls bool,
 	maxParallelImagePulls *int32,
 	imagePullQPS float32,
@@ -225,7 +225,6 @@ func NewKubeGenericRuntimeManager(
 	podPullingTimeRecorder images.ImagePodPullingTimeRecorder,
 	tracerProvider trace.TracerProvider,
 	kubeClient clientset.Interface,
-	TLSOptions *server.TLSOptions,
 ) (KubeGenericRuntime, error) {
 	ctx := context.Background()
 	runtimeService = newInstrumentedRuntimeService(runtimeService)
@@ -288,6 +287,7 @@ func NewKubeGenericRuntimeManager(
 	kubeRuntimeManager.checkpointPuller = images.NewCheckpointManager(
 		kubecontainer.FilterEventRecorder(recorder),
 		kubeClient,
+		checkpointBackOff,
 	)
 	kubeRuntimeManager.imagePuller = images.NewImageManager(
 		kubecontainer.FilterEventRecorder(recorder),
