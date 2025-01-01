@@ -288,7 +288,6 @@ func NewKubeGenericRuntimeManager(
 	kubeRuntimeManager.checkpointPuller = images.NewCheckpointManager(
 		kubecontainer.FilterEventRecorder(recorder),
 		kubeClient,
-		TLSOptions,
 	)
 	kubeRuntimeManager.imagePuller = images.NewImageManager(
 		kubecontainer.FilterEventRecorder(recorder),

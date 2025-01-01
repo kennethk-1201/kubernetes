@@ -67,5 +67,5 @@ type ImageManager interface {
 
 type CheckpointManager interface {
 	CreatePodCheckpointStore(pod *v1.Pod) error
-	EnsureCheckpointExists(ctx context.Context, pod *v1.Pod, container *v1.Container) (string, string, error)
+	EnsureCheckpointExists(ctx context.Context, objRef *v1.ObjectReference, pod *v1.Pod, container *v1.Container) (string, string, error)
 }

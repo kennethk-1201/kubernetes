@@ -23,14 +23,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/cluster/ports"
-	"k8s.io/kubernetes/pkg/kubelet/server"
+	"k8s.io/kubernetes/pkg/kubelet/events"
 	"net/http"
 	"os"
 )
@@ -40,11 +39,10 @@ const HttpsKeyFile = "/var/lib/kubelet/pki/kubelet-client-current.pem"
 const HttpsCertFile = "/var/lib/kubelet/pki/kubelet-client-current.pem"
 const CACertFile = "/etc/kubernetes/pki/ca.crt"
 
-// imageManager provides the functionalities for image pulling.
+// checkpointManager provides the functionalities for checkpoint pulling and restoring.
 type checkpointManager struct {
 	recorder   record.EventRecorder
 	kubeClient clientset.Interface
-	TLSOptions *server.TLSOptions
 
 	// TODO:
 	// - add secure connection for kubelet request
@@ -56,11 +54,19 @@ type checkpointManager struct {
 var _ CheckpointManager = &checkpointManager{}
 
 // NewCheckpointManager instantiates a new CheckpointManager object.
-func NewCheckpointManager(recorder record.EventRecorder, kubeClient clientset.Interface, TLSOptions *server.TLSOptions) CheckpointManager {
+func NewCheckpointManager(recorder record.EventRecorder, kubeClient clientset.Interface) CheckpointManager {
 	return &checkpointManager{
 		recorder:   recorder,
 		kubeClient: kubeClient,
-		TLSOptions: TLSOptions,
+	}
+}
+
+// records an event using ref, event msg.  log to glog using prefix, msg, logFn
+func (m *checkpointManager) logIt(objRef *v1.ObjectReference, eventtype, event, prefix, msg string, logFn func(args ...interface{})) {
+	if objRef != nil {
+		m.recorder.Event(objRef, eventtype, event, msg)
+	} else {
+		logFn(fmt.Sprint(prefix, " ", msg))
 	}
 }
 
@@ -70,15 +76,13 @@ func (m *checkpointManager) sendKubeletRequest(method string, endpoint string, b
 	// add client private key and cert
 	cert, err := tls.LoadX509KeyPair(HttpsCertFile, HttpsKeyFile)
 	if err != nil {
-		klog.Errorf("Error loading certificate/key pair: %v\n", err)
-		return nil, err
+		return nil, fmt.Errorf("error loading certificate/key pair: %v", err)
 	}
 	// add the CA used to verify the source node's certificate
 	if _, err := os.Stat(CACertFile); err == nil {
-		caCert, err := ioutil.ReadFile(CACertFile)
+		caCert, err := os.ReadFile(CACertFile)
 		if err != nil {
-			klog.Errorf("Failed to read CA certificate: %v\n", err)
-			return nil, err
+			return nil, fmt.Errorf("failed to read CA certificate: %v", err)
 		}
 
 		caCertPool := x509.NewCertPool()
@@ -94,31 +98,27 @@ func (m *checkpointManager) sendKubeletRequest(method string, endpoint string, b
 			InsecureSkipVerify: true,
 		}
 	} else {
-		klog.Errorf("Unable to determine if CA cert exists: %v\n", err)
-		return nil, err
+		return nil, fmt.Errorf("unable to determine if CA cert exists: %v", err)
 	}
 
 	transport := &http.Transport{TLSClientConfig: tlsConfig}
 	client := &http.Client{Transport: transport}
 	req, err := http.NewRequest(method, endpoint, body)
 	if err != nil {
-		klog.Errorf("Error creating request: %v\n", err)
-		return nil, err
+		return nil, fmt.Errorf("error creating request: %v", err)
 	}
 	return client.Do(req)
 }
 
-// retrieveSourcePodInfo retrieves the source pod's information using the new pod's annotations.
-func (m *checkpointManager) retrieveSourcePodInfo(newPod *v1.Pod, container *v1.Container) (string, string, string, string, string, error) {
+// retrieveSourcePodInfo retrieves the source pod's and source container's information using the new pod's annotations.
+func (m *checkpointManager) retrieveCheckpointInfo(ctx context.Context, newPod *v1.Pod, container *v1.Container) (*v1.Pod, *v1.Container, string, error) {
 	if m.kubeClient == nil {
-		klog.Errorf("[retrieveSourcePodInfo] kube client does not exist")
-		return "", "", "", "", "kube client does not exist, unable to retrieve source pod info", ErrImageRestore
+		return nil, nil, "kube client does not exist, unable to retrieve source pod info", ErrImageRestore
 	}
 
 	sourcePodName, nameFound := newPod.GetAnnotations()["kubernetes.io/source-pod"]
 	if !nameFound {
-		klog.Errorf("[retrieveSourcePodInfo] source pod annnotation not found")
-		return "", "", "", "", "source pod annotation not specified", ErrInvalidSourcePodSpec
+		return nil, nil, "source pod annotation not specified", ErrInvalidSourcePodSpec
 	}
 
 	sourceNamespace, namespaceFound := newPod.GetAnnotations()["kubernetes.io/source-namespace"]
@@ -126,38 +126,34 @@ func (m *checkpointManager) retrieveSourcePodInfo(newPod *v1.Pod, container *v1.
 		sourceNamespace = newPod.Namespace
 	}
 
-	sourcePod, err := m.kubeClient.CoreV1().Pods(sourceNamespace).Get(context.Background(), sourcePodName, metav1.GetOptions{})
+	sourcePod, err := m.kubeClient.CoreV1().Pods(sourceNamespace).Get(ctx, sourcePodName, metav1.GetOptions{})
 	if err != nil {
-		klog.Errorf("[retrieveSourcePodInfo] unable to find pod with name=%s, namespace=%s", sourcePodName, sourceNamespace)
-		return "", "", "", "", "unable to find source Pod", ErrInvalidSourcePodSpec
+		return nil, nil, "unable to find source Pod", ErrImageRestore
 	}
 
 	containers := sourcePod.Spec.Containers
 	for i := 0; i < len(containers); i++ {
 		if containers[i].Name == container.Name {
-			return sourcePodName, sourceNamespace, container.Name, sourcePod.Status.HostIP, "", nil
+			return sourcePod, container, "", nil
 		}
 	}
 
-	klog.Errorf("[retrieveSourcePodInfo] unable to find container %s in pod spec", container.Name)
-	return "", "", "", "", fmt.Sprintf("source container %s does not exist in list %+v", container.Name, containers), ErrInvalidSourcePodSpec
+	return nil, nil, fmt.Sprintf("source container %s does not exist in list %+v", container.Name, containers), ErrInvalidSourcePodSpec
 }
 
 // createCheckpoint creates the checkpoint in the source node.
 func (m *checkpointManager) createCheckpoint(checkpointEndpoint string) (string, error) {
 	checkpointResp, err := m.sendKubeletRequest(http.MethodPost, checkpointEndpoint, nil)
 	if err != nil {
-		klog.ErrorS(err, "[restoreContainer] Failed to call the checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
-		return "unable to reach source node to checkpoint image", ErrImageCheckpointBackOff
+		return "unable to reach source node to checkpoint image", err
 	}
 	defer checkpointResp.Body.Close()
 	if checkpointResp.StatusCode != http.StatusOK {
-		body, readErr := ioutil.ReadAll(checkpointResp.Body)
+		body, readErr := io.ReadAll(checkpointResp.Body)
 		if readErr != nil {
-			fmt.Printf("[restoreContainer] Error reading error response: %v\n", readErr)
+			return "source node failed to checkpoint image", readErr
 		}
-		klog.Errorf("[restoreContainer] Checkpoint response not ok: %s", body)
-		return "source node failed to checkpoint image", ErrImageCheckpointBackOff
+		return fmt.Sprintf("source node returned error: %b", body), readErr
 	}
 
 	return "", nil
@@ -167,11 +163,9 @@ func (m *checkpointManager) createCheckpoint(checkpointEndpoint string) (string,
 func (m *checkpointManager) retrieveCheckpoint(checkpointEndpoint string) (*io.ReadCloser, string, error) {
 	getCheckpointResp, err := m.sendKubeletRequest(http.MethodGet, checkpointEndpoint, nil)
 	if err != nil {
-		klog.ErrorS(err, "[restoreContainer] Failed to retrieve from checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
-		return nil, "unable to reach source node to retrieve checkpoint", ErrImageRetrieveCheckpointBackOff
+		return nil, "unable to reach source node to retrieve checkpoint", err
 	}
 	if getCheckpointResp.StatusCode != http.StatusOK {
-		klog.ErrorS(err, "[restoreContainer] Failed to call the retrieve checkpoint endpoint", "checkpointEndpoint", checkpointEndpoint)
 		return nil, "source node failed to return checkpoint", ErrImageRetrieveCheckpointBackOff
 	}
 	return &getCheckpointResp.Body, "", nil
@@ -181,15 +175,13 @@ func (m *checkpointManager) retrieveCheckpoint(checkpointEndpoint string) (*io.R
 func (m *checkpointManager) saveCheckpoint(checkpointData *io.ReadCloser, checkpointPath string) (string, error) {
 	outFile, err := os.Create(checkpointPath)
 	if err != nil {
-		klog.ErrorS(err, "[restoreContainer] Failed to create tarfile", "path", checkpointPath)
-		return "failed to store checkpoint", ErrImageRetrieveCheckpointBackOff
+		return "failed to store checkpoint", err
 	}
-	defer outFile.Close()
 
+	defer outFile.Close()
 	_, err = io.Copy(outFile, *checkpointData)
 	if err != nil {
-		klog.ErrorS(err, "[restoreContainer] Failed to copy tarfile", "path", checkpointPath)
-		return "failed to store checkpoint", ErrImageRetrieveCheckpointBackOff
+		return "failed to store checkpoint", err
 	}
 
 	return "", nil
@@ -199,42 +191,82 @@ func (m *checkpointManager) getCheckpointDir(pod *v1.Pod) string {
 	return fmt.Sprintf("%s/%s-%s", SourceCheckpointsDir, pod.Namespace, pod.Name)
 }
 
+// checkpointPullPrecheck checks for checkpoint presence in the local disk and returns (imageRef, exists, err).
+func (m *checkpointManager) checkpointPullPrecheck(ctx context.Context, sourcePod *v1.Pod, newPod *v1.Pod, sourceContainer *v1.Container) (string, bool, error) {
+	checkpointDir := m.getCheckpointDir(newPod)
+	imageRef := fmt.Sprintf("%s/checkpoint-%s-%s-%s.tar", checkpointDir, sourcePod.Namespace, sourcePod.Name, sourceContainer)
+
+	if _, err := os.Stat(imageRef); errors.Is(err, os.ErrNotExist) {
+		return imageRef, false, nil
+	} else if err != nil {
+		return "", false, err
+	}
+
+	return imageRef, true, nil
+}
+
+// pullCheckpoint pulls the checkpoint from the source node's kubelet API:
+// 1. Create the checkpoint in the source kubelet.
+// 2. Query the checkpoint file from the source kubelet.
+// 3. Save the checkpoint file to disk.
+
+func (m *checkpointManager) pullCheckpoint(ctx context.Context, sourcePod *v1.Pod, container *v1.Container, imageRef string) (msg string, err error) {
+	// Create checkpoint in the source node.
+	checkpointEndpoint := fmt.Sprintf("https://%s:%d/checkpoint/%s/%s/%s", sourcePod.Status.HostIP, ports.KubeletPort, sourcePod.Namespace, sourcePod.Name, container.Name)
+	if msg, err = m.createCheckpoint(checkpointEndpoint); err != nil {
+		return fmt.Sprintf("Failed to create checkpoint %q: %v", container.Name, err), ErrImageCheckpointBackOff
+	}
+
+	// Retrieve checkpoint from the source node.
+	checkpointData, msg, err := m.retrieveCheckpoint(checkpointEndpoint)
+	if err != nil {
+		return fmt.Sprintf("Failed to retrieve checkpoint %q: %v", container.Name, err), ErrImageRetrieveCheckpointBackOff
+	}
+
+	// Save checkpoint to disk.
+	defer (*checkpointData).Close()
+	if msg, err = m.saveCheckpoint(checkpointData, imageRef); err != nil {
+		return fmt.Sprintf("Failed to save checkpoint %q: %v", container.Name, err), ErrImageRetrieveCheckpointBackOff
+	}
+
+	return "", nil
+}
+
 // EnsureCheckpointExists pulls the container checkpoint for the specified pod and container, and returns
 // (imageRef, error message, error). The imageRef here is the path of the checkpoint and NOT the image URI.
-func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, newPod *v1.Pod, container *v1.Container) (string, string, error) {
-	sourcePodName, sourceNamespace, sourceContainer, sourceNodeIP, msg, err := m.retrieveSourcePodInfo(newPod, container)
+func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, objRef *v1.ObjectReference, newPod *v1.Pod, container *v1.Container) (string, string, error) {
+	logPrefix := fmt.Sprintf("%s/%s/%s", newPod.Namespace, newPod.Name, container.Image)
+
+	// Get the source pod information.
+	sourcePod, sourceContainer, msg, err := m.retrieveCheckpointInfo(ctx, newPod, container)
 	if err != nil {
+		msg = fmt.Sprintf("Failed to get source Pod information for container %s: %s", container.Name, err)
+		m.logIt(objRef, v1.EventTypeWarning, events.FailedToInspectCheckpoint, logPrefix, msg, klog.Warning)
 		return "", msg, err
 	}
-	klog.InfoS("Retrieving checkpoint", "pod", sourcePodName, "namespace", sourceNamespace, "container", sourceContainer, "node", sourceNodeIP)
+	m.logIt(objRef, v1.EventTypeNormal, events.PullingCheckpoint, logPrefix, fmt.Sprintf("Pulling checkpoint %q", container.Name), klog.Info)
 
-	checkpointDir := m.getCheckpointDir(newPod)
-	checkpointPath := fmt.Sprintf("%s/checkpoint-%s-%s-%s.tar", checkpointDir, sourceNamespace, sourcePodName, sourceContainer)
-
-	if _, err = os.Stat(checkpointPath); errors.Is(err, os.ErrNotExist) {
-		// Step 1: Create checkpoint
-		checkpointEndpoint := fmt.Sprintf("https://%s:%d/checkpoint/%s/%s/%s", sourceNodeIP, ports.KubeletPort, sourceNamespace, sourcePodName, sourceContainer)
-		if msg, err = m.createCheckpoint(checkpointEndpoint); err != nil {
-			return "", msg, err
-		}
-		// Step 2: Retrieve checkpoint
-		checkpointData, msg, err := m.retrieveCheckpoint(checkpointEndpoint)
-		if err != nil {
-			return "", msg, err
-		}
-		// Step 3: Save checkpoint
-		defer (*checkpointData).Close()
-		if msg, err = m.saveCheckpoint(checkpointData, checkpointPath); err != nil {
-			return "", msg, err
-		}
-
-		return checkpointPath, "successfully retrieved checkpoint", nil
-	} else if err != nil {
-		klog.ErrorS(err, "Failed to check if file exists", "path", checkpointPath)
-		return "", "invalid path", err
+	// Check if checkpoint already exists. If it exists, then return the imageRef.
+	imageRef, exists, err := m.checkpointPullPrecheck(ctx, sourcePod, newPod, sourceContainer)
+	if err != nil {
+		msg = fmt.Sprintf("Failed to check if checkpoint already exists %q: %v", container.Name, err)
+		m.logIt(objRef, v1.EventTypeWarning, events.FailedToPullCheckpoint, logPrefix, msg, klog.Warning)
+		return "", "invalid path", ErrImageRestore
+	}
+	if exists {
+		msg = fmt.Sprintf("Container checkpoint %q already present on machine", imageRef)
+		m.logIt(objRef, v1.EventTypeNormal, events.PulledCheckpoint, logPrefix, msg, klog.Info)
+		return imageRef, "checkpoint already exists", nil
 	}
 
-	return checkpointPath, "checkpoint already exists", nil
+	// If the checkpoint does not exist, pull the checkpoint from the source node
+	if msg, err = m.pullCheckpoint(ctx, sourcePod, container, imageRef); err != nil {
+		m.logIt(objRef, v1.EventTypeWarning, events.FailedToPullCheckpoint, logPrefix, msg, klog.Warning)
+		return "", msg, err
+	}
+
+	m.logIt(objRef, v1.EventTypeNormal, events.PulledCheckpoint, logPrefix, msg, klog.Info)
+	return imageRef, "successfully retrieved checkpoint", nil
 }
 
 // CreatePodCheckpointStore creates the directory containing all of a pod's source checkpoints.

@@ -48,6 +48,14 @@ const (
 	BackOffPullImage        = "BackOff"
 )
 
+// Checkpoint event reason list
+const (
+	PullingCheckpoint         = "PullingCheckpoint"
+	PulledCheckpoint          = "PulledCheckpoint"
+	FailedToInspectCheckpoint = "InspectCheckpointFailed"
+	FailedToPullCheckpoint    = "FailedToPullCheckpoint"
+)
+
 // kubelet event reason list
 const (
 	NodeReady                            = "NodeReady"
