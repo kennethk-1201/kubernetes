@@ -284,6 +284,7 @@ func NewKubeGenericRuntimeManager(
 		}
 	}
 	kubeRuntimeManager.keyring = credentialprovider.NewDockerKeyring()
+
 	kubeRuntimeManager.checkpointPuller = images.NewCheckpointManager(
 		kubecontainer.FilterEventRecorder(recorder),
 		kubeClient,
@@ -1213,7 +1214,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 
 		if utilfeature.DefaultFeatureGate.Enabled(features.ContainerCheckpoint) {
 			if err = m.checkpointPuller.CreatePodCheckpointStore(pod); err != nil {
-				klog.ErrorS(err, "Failed to create checkpoint directory", "pod", klog.KObj(pod))
+				klog.ErrorS(err, "Failed to create checkpoint store", "pod", klog.KObj(pod))
 				return
 			}
 		}
@@ -1363,7 +1364,7 @@ func (m *kubeGenericRuntimeManager) SyncPod(ctx context.Context, pod *v1.Pod, po
 			// known errors that are logged in other places are logged at higher levels here to avoid
 			// repetitive log spam
 			switch {
-			case err == images.ErrImagePullBackOff:
+			case err == images.ErrImagePullBackOff || err == images.ErrCheckpointPullBackOff:
 				klog.V(3).InfoS("Container start failed in pod", "containerType", typeName, "container", spec.container, "pod", klog.KObj(pod), "containerMessage", msg, "err", err)
 			default:
 				utilruntime.HandleError(fmt.Errorf("%v %+v start failed in pod %v: %v: %s", typeName, spec.container, format.Pod(pod), err, msg))

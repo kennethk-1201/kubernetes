@@ -40,17 +40,14 @@ var (
 	// ErrInvalidImageName - Unable to parse the image name.
 	ErrInvalidImageName = errors.New("InvalidImageName")
 
-	// ErrImageCheckpointBackOff - Unable to checkpoint image in the source node, kubelet is backing off image checkpoint
+	// ErrCheckpointPullBackOff - Unable to pull checkpoint from source to local, kubelet is backing off checkpoint pull
 	ErrCheckpointPullBackOff = errors.New("ErrCheckpointPullBackOff")
 
-	// ErrImageRetrieveCheckpoint - Unable to retrieve checkpoint from the source node, kubelet is backing off retrieving checkpoint
+	// ErrCheckpointPull - General checkpoint pull error
 	ErrCheckpointPull = errors.New("ErrCheckpointPull")
 
-	// ErrImageRestore - General checkpoint restore error
-	ErrImageRestore = errors.New("ErrImageRestore")
-
-	// ErrInvalidSourcePodSpec - Unable to parse the pod spec.
-	ErrInvalidSourcePodSpec = errors.New("InvalidSourcePodSpec")
+	// ErrInvalidSourcePod - Unable to parse the source pod.
+	ErrInvalidSourcePod = errors.New("InvalidSourcePodSpec")
 )
 
 // ImageManager provides an interface to manage the lifecycle of images.

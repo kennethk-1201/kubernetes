@@ -3156,14 +3156,16 @@ func (kl *Kubelet) GetLatestCheckpoint(podFullName, containerName string) ([]byt
 	}
 
 	// Step 1: Get all checkpoints for a container using the file name prefix
-	var checkpointTimes []time.Time
 	fileNamePrefix := fmt.Sprintf(
 		"checkpoint-%s-%s-",
 		podFullName,
 		containerName,
 	)
 	fileExtension := ".tar"
+	latestCheckpointFileName := ""
+	latestTime := time.Time{}
 
+	// Step 2: Find the file with the latest checkpoint time
 	for _, file := range files {
 		curr := file.Name()
 		if strings.HasPrefix(curr, fileNamePrefix) && strings.HasSuffix(curr, fileExtension) {
@@ -3174,27 +3176,18 @@ func (kl *Kubelet) GetLatestCheckpoint(podFullName, containerName string) ([]byt
 				return nil, fmt.Errorf("unable to parse time from checkpoint file name %v", curr)
 			}
 
-			checkpointTimes = append(checkpointTimes, parsedTime)
+			if parsedTime.After(latestTime) {
+				latestCheckpointFileName = curr
+				latestTime = parsedTime
+			}
 		}
 	}
 
-	if len(checkpointTimes) == 0 {
+	if latestCheckpointFileName == "" {
 		return nil, fmt.Errorf("checkpoint not found")
 	}
 
-	// Step 2: Get the latest checkpoint
-	sort.Slice(checkpointTimes, func(i, j int) bool {
-		return checkpointTimes[i].Before(checkpointTimes[j])
-	})
-
-	latestCheckpointFileName := fmt.Sprintf(
-		"checkpoint-%s-%s-%s.tar",
-		podFullName,
-		containerName,
-		checkpointTimes[len(checkpointTimes)-1].Format(time.RFC3339),
-	)
-
-	checkpoint, err := os.ReadFile(checkpointDir + "/" + latestCheckpointFileName)
+	checkpoint, err := os.ReadFile(filepath.Join(checkpointDir, latestCheckpointFileName))
 	if err != nil {
 		return nil, fmt.Errorf("unable to read checkpoint file %v", latestCheckpointFileName)
 	}

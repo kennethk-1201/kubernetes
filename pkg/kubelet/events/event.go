@@ -52,8 +52,8 @@ const (
 const (
 	PullingCheckpoint         = "PullingCheckpoint"
 	PulledCheckpoint          = "PulledCheckpoint"
-	FailedToInspectCheckpoint = "InspectCheckpointFailed"
 	FailedToPullCheckpoint    = "FailedToPullCheckpoint"
+	FailedToInspectCheckpoint = "InspectCheckpointFailed"
 	BackOffPullCheckpoint     = "BackOffCheckpoint"
 )
 

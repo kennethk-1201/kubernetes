@@ -47,11 +47,6 @@ type checkpointManager struct {
 	kubeClient     clientset.Interface
 	backOff        *flowcontrol.Backoff
 	prevPullErrMsg sync.Map
-
-	// TODO:
-	// - add secure connection for kubelet request
-	// - implement backoff logic
-	// - eventually shift core logic down to crio
 }
 
 var _ CheckpointManager = &checkpointManager{}
@@ -75,6 +70,7 @@ func (m *checkpointManager) logIt(objRef *v1.ObjectReference, eventtype, event, 
 }
 
 // sendKubeletRequest prepares the necessary request information to communicate with another kubelet's API.
+// TODO: Add proper TLS config management
 func (m *checkpointManager) sendKubeletRequest(method string, endpoint string, body io.Reader) (*http.Response, error) {
 	var tlsConfig *tls.Config
 	// add client private key and cert
@@ -117,12 +113,13 @@ func (m *checkpointManager) sendKubeletRequest(method string, endpoint string, b
 // retrieveSourcePodInfo retrieves the source pod's and source container's information using the new pod's annotations.
 func (m *checkpointManager) retrieveCheckpointInfo(ctx context.Context, newPod *v1.Pod, container *v1.Container) (*v1.Pod, *v1.Container, string, error) {
 	if m.kubeClient == nil {
-		return nil, nil, "kube client does not exist, unable to retrieve source pod info", ErrImageRestore
+		return nil, nil, "kube client does not exist, unable to retrieve source pod info", ErrCheckpointPull
 	}
 
 	sourcePodName, nameFound := newPod.GetAnnotations()["kubernetes.io/source-pod"]
 	if !nameFound {
-		return nil, nil, "source pod annotation not specified", ErrInvalidSourcePodSpec
+		// this error should not occur
+		return nil, nil, "source pod annotation not specified", ErrInvalidSourcePod
 	}
 
 	sourceNamespace, namespaceFound := newPod.GetAnnotations()["kubernetes.io/source-namespace"]
@@ -132,7 +129,7 @@ func (m *checkpointManager) retrieveCheckpointInfo(ctx context.Context, newPod *
 
 	sourcePod, err := m.kubeClient.CoreV1().Pods(sourceNamespace).Get(ctx, sourcePodName, metav1.GetOptions{})
 	if err != nil {
-		return nil, nil, "unable to find source Pod", ErrImageRestore
+		return nil, nil, "unable to find source Pod", ErrInvalidSourcePod
 	}
 
 	containers := sourcePod.Spec.Containers
@@ -142,7 +139,7 @@ func (m *checkpointManager) retrieveCheckpointInfo(ctx context.Context, newPod *
 		}
 	}
 
-	return nil, nil, fmt.Sprintf("source container %s does not exist in list %+v", container.Name, containers), ErrInvalidSourcePodSpec
+	return nil, nil, fmt.Sprintf("source container %s does not exist in list %+v", container.Name, containers), ErrInvalidSourcePod
 }
 
 // createCheckpoint creates the checkpoint in the source node.
@@ -254,7 +251,7 @@ func (m *checkpointManager) EnsureCheckpointExists(ctx context.Context, objRef *
 	if err != nil {
 		msg = fmt.Sprintf("Failed to check if checkpoint already exists %q: %v", container.Name, err)
 		m.logIt(objRef, v1.EventTypeWarning, events.FailedToPullCheckpoint, logPrefix, msg, klog.Warning)
-		return "", "invalid path", ErrImageRestore
+		return "", "invalid path", ErrCheckpointPull
 	}
 	if exists {
 		msg = fmt.Sprintf("Container checkpoint %q already present on machine", imageRef)

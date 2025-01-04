@@ -1081,15 +1081,15 @@ func (s *Server) checkpoint(request *restful.Request, response *restful.Response
 	)
 }
 
-// getCheckpoint returns the latest version of the given checkpoint to the client
+// getCheckpoint returns the latest version of the specified container checkpoint to the client
 func (s *Server) getCheckpoint(request *restful.Request, response *restful.Response) {
 	podFullName := request.PathParameter("podID") + "_" + request.PathParameter("podNamespace")
 	containerName := request.PathParameter("containerName")
 	checkpoint, err := s.host.GetLatestCheckpoint(podFullName, containerName)
 	if err != nil {
 		response.WriteError(http.StatusNotFound, err)
+		return
 	}
-
 	writeJSONResponse(response, checkpoint)
 }
 
