@@ -207,18 +207,21 @@ func (m *kubeGenericRuntimeManager) startContainer(ctx context.Context, typeName
 		klog.ErrorS(err, "Couldn't make a ref to pod", "pod", klog.KObj(pod), "containerName", container.Name)
 	}
 
-	var imageRef string
-	var msg string
-	if utilfeature.DefaultFeatureGate.Enabled(features.ContainerCheckpoint) && m.isCheckpoint(pod) && typeName == "container" {
-		imageRef, msg, err = m.checkpointPuller.EnsureCheckpointExists(ctx, ref, pod, container)
-	} else {
-		imageRef, msg, err = m.imagePuller.EnsureImageExists(ctx, ref, pod, container.Image, pullSecrets, podSandboxConfig, podRuntimeHandler, container.ImagePullPolicy)
-	}
-
+	imageRef, msg, err := m.imagePuller.EnsureImageExists(ctx, ref, pod, container.Image, pullSecrets, podSandboxConfig, podRuntimeHandler, container.ImagePullPolicy)
 	if err != nil {
 		s, _ := grpcstatus.FromError(err)
 		m.recordContainerEvent(pod, container, "", v1.EventTypeWarning, events.FailedToCreateContainer, "Error: %v", s.Message())
 		return msg, err
+	}
+
+	// if this is a checkpoint, override the imageRef to refer to the checkpoint instead
+	if utilfeature.DefaultFeatureGate.Enabled(features.ContainerCheckpoint) && m.isCheckpoint(pod) && typeName == "container" {
+		imageRef, msg, err = m.checkpointPuller.EnsureCheckpointExists(ctx, ref, pod, container)
+		if err != nil {
+			s, _ := grpcstatus.FromError(err)
+			m.recordContainerEvent(pod, container, "", v1.EventTypeWarning, events.FailedToCreateContainer, "Error: %v", s.Message())
+			return msg, err
+		}
 	}
 
 	// Step 2: create the container.
